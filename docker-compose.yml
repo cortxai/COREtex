@@ -37,6 +37,8 @@ services:
       - OPENAI_API_KEY=not-used
       # Disable Ollama's built-in connection so only the shim is used.
       - ENABLE_OLLAMA_API=false
+      # Restrict CORS to the local UI origin instead of the default wildcard.
+      - CORS_ALLOW_ORIGIN=http://localhost:3000
     depends_on:
       - ingress
     networks:
