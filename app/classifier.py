@@ -21,23 +21,26 @@ logger = logging.getLogger(__name__)
 # Prompt header is fixed text; user input is appended via concatenation to
 # avoid Python str.format() treating user-supplied braces as placeholders.
 _PROMPT_HEADER = """\
-Classify the user input below into exactly one intent. Reply with ONLY valid JSON.
+Classify the user input into one intent. Reply with ONLY valid JSON, no extra text.
 Schema: {"intent": "execution|decomposition|novel_reasoning|ambiguous", "confidence": 0.0-1.0}
 
-intent values:
-- execution: concrete task with a known, finite deliverable (write, translate, calculate, summarise, explain, code)
-  e.g. "Write a haiku", "Summarise X in 3 sentences", "Explain Y in 2 paragraphs", "Translate this", "Write a function"
-  NOTE: asking for output in N sentences/words/points is execution, not decomposition.
-- decomposition: broad HOW-TO goal requiring a multi-step process or plan
-  e.g. "How would I build a SaaS?", "Plan a migration", "Steps to launch a startup"
-  NOTE: only use this when the request asks HOW to do something complex, not for a summary or explanation.
-- novel_reasoning: open-ended thinking with no single right answer (design, compare, analyse, ethics)
-  e.g. "Design an economy for Mars", "Compare capitalism and socialism"
-- ambiguous: missing a clear task — a single word, greeting, or fragment with no actionable request
-  e.g. "Help.", "Do the thing.", "What about it?", "Hey"
-  NOTE: if you cannot tell what the user wants to produce or achieve, choose ambiguous.
+Examples:
+input: "Write a haiku about databases" -> {"intent": "execution", "confidence": 0.95}
+input: "Summarize the theory of relativity in 3 sentences" -> {"intent": "execution", "confidence": 0.95}
+input: "Explain gravity in 2 paragraphs" -> {"intent": "execution", "confidence": 0.95}
+input: "Translate this to French" -> {"intent": "execution", "confidence": 0.95}
+input: "Write a Python function to reverse a string" -> {"intent": "execution", "confidence": 0.95}
+input: "How would I build a scalable SaaS architecture?" -> {"intent": "decomposition", "confidence": 0.9}
+input: "What steps are needed to launch a startup?" -> {"intent": "decomposition", "confidence": 0.9}
+input: "Plan a migration from monolith to microservices" -> {"intent": "decomposition", "confidence": 0.9}
+input: "Design a new economic system for Mars colonies" -> {"intent": "novel_reasoning", "confidence": 0.85}
+input: "Compare capitalism and socialism" -> {"intent": "novel_reasoning", "confidence": 0.85}
+input: "What are the ethical implications of AI?" -> {"intent": "novel_reasoning", "confidence": 0.85}
+input: "Help." -> {"intent": "ambiguous", "confidence": 0.95}
+input: "Do the thing." -> {"intent": "ambiguous", "confidence": 0.95}
+input: "What about it?" -> {"intent": "ambiguous", "confidence": 0.95}
 
-User input: """
+input: """
 
 # Maps common LLM-generated intent variants to valid schema values.
 _INTENT_ALIASES: dict[str, str] = {
