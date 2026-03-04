@@ -1,4 +1,4 @@
-"""Smoke and unit tests for the Ingress API (Phase 1).
+"""Smoke and unit tests for the Ingress API (Phase 1 + Phase 2).
 
 Tests run against the FastAPI TestClient — no Docker, no Ollama required.
 Ollama calls are mocked via unittest.mock.
@@ -6,6 +6,7 @@ Ollama calls are mocked via unittest.mock.
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
@@ -174,6 +175,16 @@ def test_ingest_rejects_missing_input():
     assert response.status_code == 422
 
 
+def test_ingest_rejects_empty_string_input():
+    response = client.post("/ingest", json={"input": ""})
+    assert response.status_code == 422
+
+
+def test_ingest_rejects_whitespace_only_input():
+    response = client.post("/ingest", json={"input": "   "})
+    assert response.status_code == 422
+
+
 def test_ingest_curly_braces_in_input_do_not_crash(mock_classify_execution, mock_worker_response):
     """User input containing Python format placeholders must not raise KeyError."""
     with (
@@ -217,3 +228,84 @@ def test_health():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: intent-aware worker prompts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_worker_uses_execution_prompt():
+    """generate() for execution intent includes direct/concise wording."""
+    from app.worker import _PROMPTS
+
+    assert "direct" in _PROMPTS["execution"].lower() or "concise" in _PROMPTS["execution"].lower()
+
+
+@pytest.mark.anyio
+async def test_worker_uses_decomposition_prompt():
+    """generate() for decomposition intent mentions steps/breakdown."""
+    from app.worker import _PROMPTS
+
+    prompt = _PROMPTS["decomposition"].lower()
+    assert "step" in prompt or "breakdown" in prompt or "numbered" in prompt
+
+
+@pytest.mark.anyio
+async def test_worker_uses_novel_reasoning_prompt():
+    """generate() for novel_reasoning intent mentions creative/analytical."""
+    from app.worker import _PROMPTS
+
+    prompt = _PROMPTS["novel_reasoning"].lower()
+    assert "creative" in prompt or "analytical" in prompt or "speculate" in prompt
+
+
+@pytest.mark.anyio
+async def test_worker_unknown_intent_uses_fallback():
+    """generate() falls back gracefully for unrecognised intent."""
+    from app.worker import _FALLBACK_PROMPT, _PROMPTS
+
+    assert _FALLBACK_PROMPT == _PROMPTS["execution"]
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: graceful worker failure handling
+# ---------------------------------------------------------------------------
+
+
+def test_ingest_worker_failure_returns_graceful_response():
+    """If Ollama is unavailable during the worker call, return 200 with failure envelope."""
+    mock_classify = AsyncMock(return_value=ClassifierResponse(intent="execution", confidence=0.9))
+    with (
+        patch("app.main.classify", mock_classify),
+        patch(
+            "app.main.generate",
+            side_effect=httpx.ConnectError("refused"),
+        ),
+    ):
+        response = client.post("/ingest", json={"input": "Run a script"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intent"] == "ambiguous"
+    assert body["confidence"] == 0.0
+    assert len(body["response"]) > 0
+
+
+def test_ingest_worker_timeout_returns_graceful_response():
+    """Worker timeout returns 200 with failure envelope rather than 500."""
+    mock_classify = AsyncMock(return_value=ClassifierResponse(intent="execution", confidence=0.9))
+    with (
+        patch("app.main.classify", mock_classify),
+        patch(
+            "app.main.generate",
+            side_effect=httpx.TimeoutException("timed out"),
+        ),
+    ):
+        response = client.post("/ingest", json={"input": "Do something slow"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["intent"] == "ambiguous"
+    assert body["confidence"] == 0.0
