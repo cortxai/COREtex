@@ -43,6 +43,22 @@ OLLAMA_BASE_URL=http://192.168.1.50:11434 docker compose up --build
 
 Or edit `OLLAMA_BASE_URL` directly in `docker-compose.yml`.
 
+### Configure the model
+
+The classifier and worker can use different models. Override via env vars or edit `docker-compose.yml`:
+
+```bash
+CLASSIFIER_MODEL=llama3.2:3b WORKER_MODEL=llama3.2:3b docker compose up --build
+```
+
+Both default to `llama3.2:3b`. Any model available in your Ollama installation can be used — pull it first with `ollama pull <model>`.
+
+| Variable           | Default        | Purpose                    |
+|--------------------|----------------|----------------------------|
+| `OLLAMA_BASE_URL`  | `http://host.docker.internal:11434` | Ollama endpoint |
+| `CLASSIFIER_MODEL` | `llama3.2:3b`  | Intent classification      |
+| `WORKER_MODEL`     | `llama3.2:3b`  | Response generation        |
+
 ### Run the ingress service only (devcontainer / no Docker)
 
 ```bash
