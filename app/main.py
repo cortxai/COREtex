@@ -55,9 +55,15 @@ async def ingest(request: IngestRequest) -> IngestResponse:
             response_text = await generate(request.input, classifier_result.intent)
         except httpx.HTTPError as exc:
             status = getattr(exc.response, "status_code", "N/A") if hasattr(exc, "response") else "N/A"
+            body = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                try:
+                    body = exc.response.text[:200]
+                except Exception:
+                    pass
             logger.error(
-                "Worker call failed: %s status=%s error=%s",
-                type(exc).__name__, status, exc,
+                "Worker call failed: %s status=%s body=%r error=%s",
+                type(exc).__name__, status, body, exc,
             )
             response_text = _WORKER_FAILURE_RESPONSE
             classifier_result = classifier_result.model_copy(

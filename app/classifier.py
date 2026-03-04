@@ -67,7 +67,16 @@ async def classify(user_input: str) -> ClassifierResponse:
         try:
             raw = await _call_ollama(user_input)
         except httpx.HTTPError as exc:
-            logger.warning("Classifier attempt %d network error: %s", attempt + 1, exc)
+            body = ""
+            if hasattr(exc, "response") and exc.response is not None:
+                try:
+                    body = exc.response.text[:200]
+                except Exception:
+                    pass
+            logger.warning(
+                "Classifier attempt %d: %s body=%r %s",
+                attempt + 1, type(exc).__name__, body, exc,
+            )
             continue
         result = _parse(raw)
         if result is not None:

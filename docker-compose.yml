@@ -18,8 +18,8 @@ services:
       - "8000:8000"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - CLASSIFIER_MODEL=llama3
-      - WORKER_MODEL=llama3
+      - CLASSIFIER_MODEL=llama3:latest
+      - WORKER_MODEL=llama3:latest
       - CLASSIFIER_TIMEOUT=60
       - WORKER_TIMEOUT=300
       - MAX_TOKENS=256
