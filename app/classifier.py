@@ -33,11 +33,12 @@ Categories:
 - novel_reasoning: open-ended thinking, design, or analysis with no single correct answer
 - ambiguous   : too vague — a fragment, single word, or greeting with no clear task
 
-Rules:
-- "Summarise X in N sentences" = execution (the deliverable is fixed)
-- "How do I / What steps / Plan" = decomposition
-- "Design / Compare / Analyse / What if" = novel_reasoning
-- Single word or greeting = ambiguous"""
+Rules (apply in order — first match wins):
+1. If the request says "write", "generate", "create", "compose", "draft", or "produce" followed by a specific artifact (poem, haiku, essay, story, function, script, email, list) → execution, regardless of how creative the artifact is.
+2. "Summarise / explain / describe X in N sentences/words/paragraphs" → execution.
+3. "How do I / What steps / How would I / Plan / Walk me through" → decomposition.
+4. "Design / Compare / Analyse / Evaluate / What if / What are the implications" → novel_reasoning.
+5. Single word, greeting, or fragment with no clear task → ambiguous."""
 
 # Maps common LLM-generated intent variants to valid schema values.
 _INTENT_ALIASES: dict[str, str] = {
