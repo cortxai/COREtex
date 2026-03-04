@@ -2,6 +2,9 @@
 
 Returns strict JSON: {"intent": <str>, "confidence": <float>}
 
+Uses the Ollama /api/chat endpoint with a system message so that
+instruction-tuned models follow the schema reliably.
+
 Retries once if the response is not valid JSON; falls back to
 intent="ambiguous", confidence=0.0 on second failure.
 """
@@ -18,29 +21,23 @@ from app.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Prompt header is fixed text; user input is appended via concatenation to
-# avoid Python str.format() treating user-supplied braces as placeholders.
-_PROMPT_HEADER = """\
-Classify the user input into one intent. Reply with ONLY valid JSON, no extra text.
-Schema: {"intent": "execution|decomposition|novel_reasoning|ambiguous", "confidence": 0.0-1.0}
+# System message sent to the model as the authoritative instruction.
+# User input is passed as a separate user turn — never interpolated here.
+_SYSTEM_PROMPT = """\
+You are an intent classifier. Given a user input, reply with ONLY a JSON object — no prose, no markdown.
+Use exactly this schema: {"intent": "<category>", "confidence": <0.0-1.0>}
 
-Examples:
-input: "Write a haiku about databases" -> {"intent": "execution", "confidence": 0.95}
-input: "Summarize the theory of relativity in 3 sentences" -> {"intent": "execution", "confidence": 0.95}
-input: "Explain gravity in 2 paragraphs" -> {"intent": "execution", "confidence": 0.95}
-input: "Translate this to French" -> {"intent": "execution", "confidence": 0.95}
-input: "Write a Python function to reverse a string" -> {"intent": "execution", "confidence": 0.95}
-input: "How would I build a scalable SaaS architecture?" -> {"intent": "decomposition", "confidence": 0.9}
-input: "What steps are needed to launch a startup?" -> {"intent": "decomposition", "confidence": 0.9}
-input: "Plan a migration from monolith to microservices" -> {"intent": "decomposition", "confidence": 0.9}
-input: "Design a new economic system for Mars colonies" -> {"intent": "novel_reasoning", "confidence": 0.85}
-input: "Compare capitalism and socialism" -> {"intent": "novel_reasoning", "confidence": 0.85}
-input: "What are the ethical implications of AI?" -> {"intent": "novel_reasoning", "confidence": 0.85}
-input: "Help." -> {"intent": "ambiguous", "confidence": 0.95}
-input: "Do the thing." -> {"intent": "ambiguous", "confidence": 0.95}
-input: "What about it?" -> {"intent": "ambiguous", "confidence": 0.95}
+Categories:
+- execution   : a concrete task with a specific deliverable (write, translate, summarise, calculate, code)
+- decomposition: a broad HOW-TO request needing a multi-step plan (how to build, steps to launch, plan X)
+- novel_reasoning: open-ended thinking, design, or analysis with no single correct answer
+- ambiguous   : too vague — a fragment, single word, or greeting with no clear task
 
-input: """
+Rules:
+- "Summarise X in N sentences" = execution (the deliverable is fixed)
+- "How do I / What steps / Plan" = decomposition
+- "Design / Compare / Analyse / What if" = novel_reasoning
+- Single word or greeting = ambiguous"""
 
 # Maps common LLM-generated intent variants to valid schema values.
 _INTENT_ALIASES: dict[str, str] = {
@@ -95,19 +92,22 @@ async def classify(user_input: str) -> ClassifierResponse:
 
 
 async def _call_ollama(user_input: str) -> str:
-    prompt = _PROMPT_HEADER + user_input
+    """Call Ollama /api/chat with a system message + user turn."""
     payload = {
         "model": settings.classifier_model,
-        "prompt": prompt,
-        "format": "json",  # Ollama native JSON mode — constrains token generation to valid JSON
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_input},
+        ],
+        "format": "json",
         "stream": False,
-        "options": {"temperature": 0, "num_predict": settings.max_tokens},
+        "options": {"temperature": 0, "num_predict": 64},
     }
     logger.info("LLM call 1/2: classifier model=%s", settings.classifier_model)
     async with httpx.AsyncClient(timeout=settings.classifier_timeout) as client:
-        resp = await client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
+        resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
         resp.raise_for_status()
-        raw = resp.json()["response"]
+        raw = resp.json()["message"]["content"]
         logger.debug("Classifier raw response: %r", raw)
         return raw
 

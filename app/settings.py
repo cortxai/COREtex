@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
-    classifier_model: str = "llama3.2:1b"
-    worker_model: str = "llama3.2:1b"
+    classifier_model: str = "llama3.2:3b"
+    worker_model: str = "llama3.2:3b"
     classifier_timeout: int = 60   # short: classifier generates ~30 JSON tokens
     worker_timeout: int = 300      # long: worker may generate up to 256 tokens on CPU
     max_tokens: int = 256
