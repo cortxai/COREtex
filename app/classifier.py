@@ -42,10 +42,12 @@ The user asks to create, write, generate, compose, draft, produce, summarise, tr
 Creativity does NOT matter. If something must be produced, it is execution.
 
 planning:
-The user asks for steps, a plan, or how to do something.
+The user asks how to do something or asks for steps, a plan, a process, or how something should be built.
+Keywords often include: how, steps, build, launch, start, implement.
 
 analysis:
-The user asks for comparison, evaluation, implications, analysis, or open-ended discussion.
+The user asks for design, evaluation, comparison, implications, or open-ended thinking.
+Keywords often include: design, compare, analyse, evaluate, implications.
 
 ambiguous:
 The request is a greeting, fragment, or unclear.
