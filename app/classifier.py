@@ -119,6 +119,12 @@ _EXECUTION_PREFIXES = (
     "code", "list",
 )
 
+_PLANNING_PREFIXES = (
+    "how do i",
+    "how would i",
+    "how can i",
+    "what steps",
+)
 
 async def classify(user_input: str) -> ClassifierResponse:
     """Classify *user_input* and return a ClassifierResponse.
