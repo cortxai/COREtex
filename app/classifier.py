@@ -52,7 +52,7 @@ The request is a greeting, fragment, or unclear.
 
 Important:
 If the request asks to write, generate, or create something, it is ALWAYS execution.
-If unsure, choose execution.
+If none of the definitions clearly match, choose ambiguous.
 
 Examples:
 
