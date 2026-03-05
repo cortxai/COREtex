@@ -72,7 +72,20 @@ User: Compare Kubernetes and Nomad.
 {"intent": "analysis", "confidence": 0.9}
 
 User: Hello
-{"intent": "ambiguous", "confidence": 0.9}"""
+{"intent": "ambiguous", "confidence": 0.9}
+
+User: How would I build a scalable SaaS architecture?
+{"intent": "planning", "confidence": 0.9}
+
+User: What steps are required to launch a startup?
+{"intent": "planning", "confidence": 0.9}
+
+User: Design a new economic system for Mars colonies.
+{"intent": "analysis", "confidence": 0.9}
+
+User: What are the implications of AI replacing software engineers?
+{"intent": "analysis", "confidence": 0.9}
+"""
 
 # Maps common LLM-generated intent variants to valid schema values.
 _INTENT_ALIASES: dict[str, str] = {
