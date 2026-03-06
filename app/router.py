@@ -34,7 +34,7 @@ def route(
         handler = "clarify"
 
     logger.info(
-        "event=intent_router request_id=%s intent=%s route=%s confidence=%.2f",
-        request_id, intent, handler, confidence,
+        "event=intent_router request_id=%s intent=%s route=%s confidence=%.2f input=%r",
+        request_id, intent, handler, confidence, user_input[:120] if user_input else "",
     )
     return handler
