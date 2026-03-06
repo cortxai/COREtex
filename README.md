@@ -1,18 +1,18 @@
-# :brain: Cortex
+# :brain: CortX AI
 
 > **This project is in Alpha - it may introduce breaking changes** | **This project is not production ready**
 
-**Cortex** is a local-first intelligent automation platform designed to turn natural language into reliable, structured system behaviour.
+**CortX** is a local-first intelligent automation platform designed to turn natural language into reliable, structured system behaviour.
 
-Rather than being a single model, service, or workflow engine, Cortex is an orchestration layer that connects language understanding, structured reasoning, and tool execution into a cohesive system. Its purpose is simple: allow humans to describe *what they want*, while Cortex determines *how to accomplish it* safely and deterministically.
+Rather than being a single model, service, or workflow engine, CortX is an orchestration layer that connects language understanding, structured reasoning, and tool execution into a cohesive system. Its purpose is simple: allow humans to describe *what they want*, while CortX determines *how to accomplish it* safely and deterministically.
 
-At its core, Cortex is built around a clear principle: **language should be an interface, not the system itself**.
+At its core, CortX is built around a clear principle: **language should be an interface, not the system itself**.
 
-Large language models are powerful interpreters of intent, but they are not inherently reliable decision engines. Cortex separates interpretation from execution, using structured routing, deterministic validation, and controlled tool interfaces to convert ambiguous human input into predictable outcomes.
+Large language models are powerful interpreters of intent, but they are not inherently reliable decision engines. CortX separates interpretation from execution, using structured routing, deterministic validation, and controlled tool interfaces to convert ambiguous human input into predictable outcomes.
 
 The platform is designed to run **locally and privately**, allowing individuals, engineers, and organisations to build intelligent systems without depending on external APIs or opaque infrastructure. Every component — from the language models to the orchestration layer — is intended to be deployable within environments you control.
 
-Over time, Cortex aims to evolve into a foundation for building intelligent software systems where:
+Over time, CortX aims to evolve into a foundation for building intelligent software systems where:
 
 - Natural language becomes a **first-class interface**
 - Automation remains **transparent and debuggable**
@@ -22,7 +22,7 @@ Over time, Cortex aims to evolve into a foundation for building intelligent soft
 
 ---
 
-## What Cortex can do today (v0.2.0)
+## What CortX can do today (v0.2.0)
 
 - **Understand intent** — classifies every request as `execution`, `planning`, `analysis`, or `ambiguous` using a local LLM, with deterministic prefix checks for common patterns.
 - **Route deterministically** — maps intent to the correct execution path using a pure Python dict, not another LLM.
@@ -72,7 +72,7 @@ Agents (the worker LLM) must return strict JSON. Two formats are supported:
 {"action": "tool", "tool": "read_file", "args": {"path": "notes.md"}}
 ```
 
-If the LLM returns plain text instead of JSON, Cortex gracefully falls back to treating it as a direct response.
+If the LLM returns plain text instead of JSON, CortX gracefully falls back to treating it as a direct response.
 
 ---
 

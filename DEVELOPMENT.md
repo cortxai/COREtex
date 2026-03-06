@@ -1,12 +1,12 @@
 # Development Guide
 
-This guide is written for developers who want to extend or modify Cortex. It covers the architecture, core components, and how to add new tools, routes, and capabilities.
+This guide is written for developers who want to extend or modify CortX. It covers the architecture, core components, and how to add new tools, routes, and capabilities.
 
 ---
 
 ## Architecture overview
 
-Cortex is a FastAPI service that acts as an orchestration layer between a user interface, a set of local LLMs (via Ollama), and a tool execution layer.
+CortX is a FastAPI service that acts as an orchestration layer between a user interface, a set of local LLMs (via Ollama), and a tool execution layer.
 
 ```
 User input

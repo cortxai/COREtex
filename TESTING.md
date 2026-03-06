@@ -1,6 +1,6 @@
 # Testing Guide
 
-This guide explains how to verify that all features of Cortex are working correctly — from the tool execution layer through to the full end-to-end pipeline.
+This guide explains how to verify that all features of CortX are working correctly — from the tool execution layer through to the full end-to-end pipeline.
 
 ---
 
@@ -140,11 +140,11 @@ Expected: `intent` = `"execution"`, `source=prefix_match` in logs (no LLM call f
 Create a test file, then send a request that instructs the agent to read it.
 
 ```bash
-echo "This is my test file content." > /tmp/cortex_test.txt
+echo "This is my test file content." > /tmp/cortx_test.txt
 
 curl -s -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"input": "Read the file at /tmp/cortex_test.txt and tell me what it says"}' \
+  -d '{"input": "Read the file at /tmp/cortx_test.txt and tell me what it says"}' \
   | python3 -m json.tool
 ```
 
@@ -244,7 +244,7 @@ curl http://localhost:8000/health
 Ensure the Python path is set correctly. The `pytest.ini` file sets `pythonpath = .` which makes the project root importable. Run pytest from the project root:
 
 ```bash
-cd /path/to/cortex
+cd /path/to/cortx
 pytest tests/test_smoke.py -v
 ```
 
