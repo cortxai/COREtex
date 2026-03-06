@@ -137,28 +137,45 @@ _AMBIGUOUS_SHORT = (
     "thanks",
 )
 
-async def classify(user_input: str) -> ClassifierResponse:
+async def classify(user_input: str, request_id: str = "") -> ClassifierResponse:
     """Classify *user_input* and return a ClassifierResponse.
 
     Applies a deterministic prefix check before calling the LLM to eliminate
     the most common misclassifications. Retries once on bad JSON or network
     error; returns fallback on second failure.
     """
+    import time
 
+    t_start = time.monotonic()
     lower = user_input.lower().strip()
 
     if lower.startswith(_EXECUTION_PREFIXES):
-        return ClassifierResponse(intent="execution", confidence=0.95)
+        result = ClassifierResponse(intent="execution", confidence=0.95)
+        logger.info(
+            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
+            request_id, result.intent, result.confidence,
+        )
+        return result
 
     if lower.startswith(_PLANNING_PREFIXES):
-        return ClassifierResponse(intent="planning", confidence=0.95)
+        result = ClassifierResponse(intent="planning", confidence=0.95)
+        logger.info(
+            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
+            request_id, result.intent, result.confidence,
+        )
+        return result
 
     if lower.startswith(_AMBIGUOUS_SHORT):
-        return ClassifierResponse(intent="ambiguous", confidence=0.95)
+        result = ClassifierResponse(intent="ambiguous", confidence=0.95)
+        logger.info(
+            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
+            request_id, result.intent, result.confidence,
+        )
+        return result
 
     for attempt in range(2):
         try:
-            raw = await _call_ollama(user_input)
+            raw = await _call_ollama(user_input, request_id)
         except httpx.HTTPError as exc:
             body = ""
             if hasattr(exc, "response") and exc.response is not None:
@@ -167,21 +184,43 @@ async def classify(user_input: str) -> ClassifierResponse:
                 except Exception:
                     pass
             logger.warning(
-                "Classifier attempt %d: %s body=%r %s",
-                attempt + 1, type(exc).__name__, body, exc,
+                "event=classifier_retry request_id=%s attempt=%d reason=network_error "
+                "error_type=%s body=%r error=%s",
+                request_id, attempt + 1, type(exc).__name__, body, exc,
             )
             continue
         result = _parse(raw)
         if result is not None:
+            latency_ms = int((time.monotonic() - t_start) * 1000)
+            logger.info(
+                "event=classifier_result request_id=%s intent=%s confidence=%.2f source=llm",
+                request_id, result.intent, result.confidence,
+            )
+            logger.info(
+                "event=classifier_latency request_id=%s latency_ms=%d",
+                request_id, latency_ms,
+            )
             return result
-        logger.warning("Classifier attempt %d: could not parse response: %r", attempt + 1, raw)
+        logger.warning(
+            "event=classifier_retry request_id=%s attempt=%d reason=invalid_json raw=%r",
+            request_id, attempt + 1, raw,
+        )
 
-    logger.error("Classifier failed after 2 attempts; returning fallback.")
+    latency_ms = int((time.monotonic() - t_start) * 1000)
+    logger.error(
+        "event=classifier_fallback request_id=%s reason=max_retries_exceeded latency_ms=%d",
+        request_id, latency_ms,
+    )
     return ClassifierResponse(intent="ambiguous", confidence=0.0)
 
 
-async def _call_ollama(user_input: str) -> str:
+async def _call_ollama(user_input: str, request_id: str = "") -> str:
     """Call Ollama /api/chat with a system message + user turn."""
+    if settings.debug_router:
+        logger.debug(
+            "event=classifier_prompt request_id=%s prompt=%r",
+            request_id, _SYSTEM_PROMPT[:500],
+        )
     payload = {
         "model": settings.classifier_model,
         "messages": [
@@ -192,12 +231,18 @@ async def _call_ollama(user_input: str) -> str:
         "stream": False,
         "options": {"temperature": 0, "top_p": 0.8, "num_predict": 32},
     }
-    logger.info("LLM call 1/2: classifier model=%s", settings.classifier_model)
+    logger.info(
+        "event=llm_call request_id=%s call=1/2 model=%s",
+        request_id, settings.classifier_model,
+    )
     async with httpx.AsyncClient(timeout=settings.classifier_timeout) as client:
         resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
         resp.raise_for_status()
         raw = resp.json()["message"]["content"]
-        logger.debug("Classifier raw response: %r", raw)
+        logger.debug(
+            "event=classifier_raw_output request_id=%s output=%r",
+            request_id, raw,
+        )
         return raw
 
 
