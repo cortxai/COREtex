@@ -5,6 +5,7 @@ No memory, no tools.
 """
 
 import logging
+import time
 
 import httpx
 
@@ -41,8 +42,6 @@ async def generate(user_input: str, intent: str, request_id: str = "") -> str:
 
     Raises httpx.HTTPError on network or HTTP failures (caller handles gracefully).
     """
-    import time
-
     prompt = _PROMPTS.get(intent, _FALLBACK_PROMPT) + user_input
 
     if settings.debug_router:

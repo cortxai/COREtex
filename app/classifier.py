@@ -11,6 +11,7 @@ intent="ambiguous", confidence=0.0 on second failure.
 
 import json
 import logging
+import time
 from typing import Optional
 
 import httpx
@@ -144,8 +145,6 @@ async def classify(user_input: str, request_id: str = "") -> ClassifierResponse:
     the most common misclassifications. Retries once on bad JSON or network
     error; returns fallback on second failure.
     """
-    import time
-
     t_start = time.monotonic()
     lower = user_input.lower().strip()
 
