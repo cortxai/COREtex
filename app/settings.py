@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     max_tokens: int = 256
     ingress_port: int = 8000
     log_level: str = "INFO"
+    debug_router: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
