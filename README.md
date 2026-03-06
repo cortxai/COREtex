@@ -74,10 +74,26 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ```bash
 curl -X POST http://localhost:8000/ingest \
-  -H 'Content-Type: application/json' \
+  -H "Content-Type: application/json" \
   -d '{"input": "Write a haiku about databases"}'
 # → {"intent":"execution","confidence":0.92,"response":"..."}
 ```
+
+> ⚠️ **Shell quoting:** Always wrap the `-d` payload in **single quotes** and keep the input value free of single quotes. If your input contains an apostrophe (e.g. `I'm`, `don't`), the apostrophe will close the shell string early and `curl` will appear to freeze — bash is silently waiting for you to close the string. Use Ctrl-C to recover.
+>
+> Safe alternatives for inputs with apostrophes:
+> ```bash
+> # Option 1 — escape with '\''
+> curl -X POST http://localhost:8000/ingest \
+>   -H "Content-Type: application/json" \
+>   -d '{"input": "I'\''m launching a bookstore"}'
+>
+> # Option 2 — write JSON to a file and use @
+> echo '{"input": "I'\''m launching a bookstore"}' > /tmp/body.json
+> curl -X POST http://localhost:8000/ingest \
+>   -H "Content-Type: application/json" \
+>   -d @/tmp/body.json
+> ```
 
 ### OpenWebUI
 
@@ -109,7 +125,7 @@ docker compose logs -f ingress
 docker compose logs ingress | grep "request_id=<id>"
 ```
 
-**Expected log sequence for a successful request:**
+**Expected log sequence for a successful request (LLM classification path):**
 ```
 event=request_received request_id=<id>
 event=llm_call request_id=<id> call=1/2 ...
@@ -120,6 +136,16 @@ event=worker_start request_id=<id> worker=worker intent=execution
 event=llm_call request_id=<id> call=2/2 ...
 event=worker_complete request_id=<id> worker=worker latency_ms=...
 event=request_complete request_id=<id> intent=execution confidence=... total_latency_ms=...
+```
+
+**For inputs matching a prefix (e.g. "Write...", "How do I...")** the classifier short-circuits before any LLM call — `source=prefix_match` appears and the `llm_call 1/2` / `classifier_latency` lines are absent:
+```
+event=request_received request_id=<id>
+event=classifier_result request_id=<id> intent=execution confidence=0.95 source=prefix_match
+event=intent_router request_id=<id> intent=execution route=worker ...
+event=worker_start ...
+event=worker_complete ...
+event=request_complete ...
 ```
 
 ### Enable debug logging
