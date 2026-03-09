@@ -1,13 +1,10 @@
-"""Classifier agent — calls the LLM to categorise user intent.
+"""ClassifierBasic — intent classifier using deterministic prefix checks and an LLM.
 
-Returns strict JSON: {"intent": <str>, "confidence": <float>}
-
-Uses the Ollama /api/chat endpoint with a system message so that
-instruction-tuned models follow the schema reliably.
-
-Retries once if the response is not valid JSON; falls back to
-intent="ambiguous", confidence=0.0 on second failure.
+This is the v0.3.0 successor to app/classifier.py, refactored as a module that
+implements the Classifier interface.
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -15,15 +12,27 @@ import time
 from typing import Optional
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
+from typing import Literal
 
-from app.models import ClassifierResponse
-from app.settings import settings
+from coretex.config.settings import settings
+from coretex.interfaces.classifier import ClassificationResult, Classifier
 
 logger = logging.getLogger(__name__)
 
-# System message sent to the model as the authoritative instruction.
-# User input is passed as a separate user turn — never interpolated here.
+# ---------------------------------------------------------------------------
+# Internal Pydantic validation model (not exposed outside this module)
+# ---------------------------------------------------------------------------
+
+class _ClassifierResponse(BaseModel):
+    intent: Literal["execution", "planning", "analysis", "ambiguous"]
+    confidence: float
+
+
+# ---------------------------------------------------------------------------
+# Classifier prompt and normalisation constants
+# ---------------------------------------------------------------------------
+
 _SYSTEM_PROMPT = """\
 You are a strict intent classifier.
 
@@ -90,7 +99,6 @@ User: What are the implications of AI replacing software engineers?
 {"intent": "analysis", "confidence": 0.9}
 """
 
-# Maps common LLM-generated intent variants to valid schema values.
 _INTENT_ALIASES: dict[str, str] = {
     "creative_writing": "execution",
     "creative": "execution",
@@ -109,9 +117,7 @@ _INTENT_ALIASES: dict[str, str] = {
     "other": "ambiguous",
 }
 
-# Alternative field names some models use instead of "intent".
 _INTENT_FIELD_CANDIDATES = ("intent", "category", "type", "classification", "class")
-
 
 _EXECUTION_PREFIXES = (
     "write", "generate", "create", "compose",
@@ -138,79 +144,83 @@ _AMBIGUOUS_SHORT = (
     "thanks",
 )
 
-async def classify(user_input: str, request_id: str = "") -> ClassifierResponse:
-    """Classify *user_input* and return a ClassifierResponse.
 
-    Applies a deterministic prefix check before calling the LLM to eliminate
-    the most common misclassifications. Retries once on bad JSON or network
-    error; returns fallback on second failure.
-    """
-    t_start = time.monotonic()
-    lower = user_input.lower().strip()
+# ---------------------------------------------------------------------------
+# Classifier implementation
+# ---------------------------------------------------------------------------
 
-    if lower.startswith(_EXECUTION_PREFIXES):
-        result = ClassifierResponse(intent="execution", confidence=0.95)
-        logger.info(
-            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
-            request_id, result.intent, result.confidence,
-        )
-        return result
 
-    if lower.startswith(_PLANNING_PREFIXES):
-        result = ClassifierResponse(intent="planning", confidence=0.95)
-        logger.info(
-            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
-            request_id, result.intent, result.confidence,
-        )
-        return result
+class ClassifierBasic(Classifier):
+    """Intent classifier: deterministic prefix checks first, LLM call second."""
 
-    if lower.startswith(_AMBIGUOUS_SHORT):
-        result = ClassifierResponse(intent="ambiguous", confidence=0.95)
-        logger.info(
-            "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
-            request_id, result.intent, result.confidence,
-        )
-        return result
+    async def classify(self, user_input: str, request_id: str = "") -> ClassificationResult:
+        """Classify *user_input* and return a ClassificationResult."""
+        t_start = time.monotonic()
+        lower = user_input.lower().strip()
 
-    for attempt in range(2):
-        try:
-            raw = await _call_ollama(user_input, request_id)
-        except (httpx.HTTPError, httpx.RequestError) as exc:
-            body = ""
-            if hasattr(exc, "response") and exc.response is not None:
-                try:
-                    body = exc.response.text[:200]
-                except Exception:
-                    pass
-            logger.warning(
-                "event=classifier_retry request_id=%s attempt=%d reason=network_error "
-                "error_type=%s body=%r error=%r",
-                request_id, attempt + 1, type(exc).__name__, body, str(exc) or repr(exc),
-            )
-            continue
-        result = _parse(raw)
-        if result is not None:
-            latency_ms = int((time.monotonic() - t_start) * 1000)
+        if lower.startswith(_EXECUTION_PREFIXES):
+            result = ClassificationResult(intent="execution", confidence=0.95, source="prefix_match")
             logger.info(
-                "event=classifier_result request_id=%s intent=%s confidence=%.2f source=llm",
+                "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
                 request_id, result.intent, result.confidence,
             )
+            return result
+
+        if lower.startswith(_PLANNING_PREFIXES):
+            result = ClassificationResult(intent="planning", confidence=0.95, source="prefix_match")
             logger.info(
-                "event=classifier_latency request_id=%s latency_ms=%d",
-                request_id, latency_ms,
+                "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
+                request_id, result.intent, result.confidence,
             )
             return result
-        logger.warning(
-            "event=classifier_retry request_id=%s attempt=%d reason=invalid_json raw=%r",
-            request_id, attempt + 1, raw,
-        )
 
-    latency_ms = int((time.monotonic() - t_start) * 1000)
-    logger.error(
-        "event=classifier_fallback request_id=%s reason=max_retries_exceeded latency_ms=%d",
-        request_id, latency_ms,
-    )
-    return ClassifierResponse(intent="ambiguous", confidence=0.0)
+        if lower.startswith(_AMBIGUOUS_SHORT):
+            result = ClassificationResult(intent="ambiguous", confidence=0.95, source="prefix_match")
+            logger.info(
+                "event=classifier_result request_id=%s intent=%s confidence=%.2f source=prefix_match",
+                request_id, result.intent, result.confidence,
+            )
+            return result
+
+        for attempt in range(2):
+            try:
+                raw = await _call_ollama(user_input, request_id)
+            except (httpx.HTTPError, httpx.RequestError) as exc:
+                body = ""
+                if hasattr(exc, "response") and exc.response is not None:
+                    try:
+                        body = exc.response.text[:200]
+                    except Exception:
+                        pass
+                logger.warning(
+                    "event=classifier_retry request_id=%s attempt=%d reason=network_error "
+                    "error_type=%s body=%r error=%r",
+                    request_id, attempt + 1, type(exc).__name__, body, str(exc) or repr(exc),
+                )
+                continue
+            parsed = _parse(raw)
+            if parsed is not None:
+                latency_ms = int((time.monotonic() - t_start) * 1000)
+                logger.info(
+                    "event=classifier_result request_id=%s intent=%s confidence=%.2f source=llm",
+                    request_id, parsed.intent, parsed.confidence,
+                )
+                logger.info(
+                    "event=classifier_latency request_id=%s latency_ms=%d",
+                    request_id, latency_ms,
+                )
+                return ClassificationResult(intent=parsed.intent, confidence=parsed.confidence, source="llm")
+            logger.warning(
+                "event=classifier_retry request_id=%s attempt=%d reason=invalid_json raw=%r",
+                request_id, attempt + 1, raw,
+            )
+
+        latency_ms = int((time.monotonic() - t_start) * 1000)
+        logger.error(
+            "event=classifier_fallback request_id=%s reason=max_retries_exceeded latency_ms=%d",
+            request_id, latency_ms,
+        )
+        return ClassificationResult(intent="ambiguous", confidence=0.0, source="fallback")
 
 
 async def _call_ollama(user_input: str, request_id: str = "") -> str:
@@ -245,9 +255,8 @@ async def _call_ollama(user_input: str, request_id: str = "") -> str:
         return raw
 
 
-def _parse(raw: str) -> Optional[ClassifierResponse]:
+def _parse(raw: str) -> Optional[_ClassifierResponse]:
     text = raw.strip()
-    # Strip markdown code fences in case a model ignores the format constraint.
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:]).strip()
@@ -260,13 +269,11 @@ def _parse(raw: str) -> Optional[ClassifierResponse]:
     if not isinstance(data, dict):
         return None
 
-    # Try strict parse first.
     try:
-        return ClassifierResponse(**data)
+        return _ClassifierResponse(**data)
     except ValidationError:
         pass
 
-    # Normalise: find the intent value under any common field name, then map aliases.
     raw_intent = None
     for field in _INTENT_FIELD_CANDIDATES:
         if field in data:
@@ -281,11 +288,10 @@ def _parse(raw: str) -> Optional[ClassifierResponse]:
     confidence = float(data.get("confidence", data.get("score", data.get("certainty", 0.5))))
 
     try:
-        return ClassifierResponse(intent=intent, confidence=confidence)
+        return _ClassifierResponse(intent=intent, confidence=confidence)
     except ValidationError:
         logger.warning(
             "Classifier intent %r (normalised from %r) not in schema; treating as ambiguous",
             intent, raw_intent,
         )
-        return ClassifierResponse(intent="ambiguous", confidence=0.0)
-
+        return _ClassifierResponse(intent="ambiguous", confidence=0.0)

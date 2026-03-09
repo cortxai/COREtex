@@ -1,6 +1,6 @@
 # Testing Guide
 
-This guide explains how to verify that all features of CortX are working correctly — from the tool execution layer through to the full end-to-end pipeline.
+This guide explains how to validate that all functionality of COREtex is working correctly — from the automated test suite through to end-to-end live requests.
 
 ---
 
@@ -14,7 +14,7 @@ This guide explains how to verify that all features of CortX are working correct
 
 ## 1. Run the automated test suite (no Docker, no Ollama required)
 
-The entire test suite mocks all Ollama calls, so it can run in any environment with Python installed.
+The entire test suite mocks all Ollama calls, so it runs in any environment with Python installed.
 
 ```bash
 # Install dependencies
@@ -24,29 +24,35 @@ pip install -r requirements.txt
 pytest tests/test_smoke.py -v
 ```
 
-Expected output: **61 tests passed**.
+Expected output: **106 tests passed**.
 
 ### What the tests cover
 
 | Category | What is verified |
-|---|---|
-| Router | All 4 intent→handler mappings; unknown-intent fallback to `clarify` |
-| Classifier schema | Valid and invalid intent values |
+|----------|-----------------|
+| Router | All 4 intent→handler mappings; unknown-intent fallback to `clarify`; `router_fallback` log event |
+| Classifier schema | Valid and invalid intent values (`_ClassifierResponse` internal validator) |
 | Classifier behaviour | Network error fallback, invalid JSON fallback, markdown-fence stripping, alias normalisation, alternative field names, capitalisation normalisation |
 | `/ingest` pipeline | Happy path, ambiguous input, missing/empty/whitespace input (422), curly braces in input |
 | `/v1/chat/completions` | 200 response, empty messages, whitespace-only messages |
-| Health check | `GET /health` → 200 |
+| Health and models | `GET /health` → 200; `GET /v1/models` returns `agentic` |
 | Worker prompts | Each intent's prompt contains expected keywords; unknown intent uses fallback; JSON instructions present |
-| Worker failure | `ConnectError` and `TimeoutException` both return 200 with `intent="ambiguous", confidence=0.0` |
+| Worker failure | `ConnectError` and `TimeoutException` both return 200 with `intent="ambiguous"` |
 | Observability | `GET /debug/routes`; `router_fallback` and `intent_router` log events; `classifier_result` for prefix matches |
-| **Tool registry** | Register, get, duplicate raises, unknown-tool raises, list |
-| **Tool execution** | `Tool.execute()` calls the underlying function correctly |
-| **AgentAction** | `from_dict` for respond and tool actions; args defaults to `{}` |
-| **ToolExecutor** | respond action returns content; tool action executes tool; unknown action raises; unknown tool raises |
-| **parse_agent_output** | Valid respond JSON; valid tool JSON; invalid JSON raises `JSONDecodeError` |
-| **Filesystem tool** | Reads existing file; returns error string for missing file |
-| **bootstrap_tools** | `read_file` is registered at startup |
-| **Integration** | JSON respond envelope unwrapped correctly; tool call reads a real temp file; plain-text fallback; unknown-tool returns failure response; `agent_selected` event logged |
+| Tool registry | Register, get, duplicate raises (`already registered`), unknown-tool raises (`Unknown component`), list |
+| Tool execution | `Tool.execute()` calls the underlying function |
+| AgentAction | `from_dict` for respond and tool actions; args defaults to `{}` |
+| ToolExecutor | respond action returns content; tool action executes tool; unknown action raises; unknown tool raises; missing tool name raises; runtime exception propagates |
+| `parse_agent_output` | Valid respond JSON; valid tool JSON; invalid JSON raises `JSONDecodeError` |
+| Filesystem tool | Reads existing file; returns error string for missing file |
+| Module bootstrap | `read_file` is registered at startup |
+| **Registry validation** | Duplicate classifier/router/worker/model_provider/pipeline raises; unknown classifier/router/worker/model_provider/pipeline raises; `registry_lookup_failed` log emitted |
+| **ModuleLoader** | Valid module loads; missing `register()` raises; wrong signature raises; empty registration logs warning; `ImportError` raises; `load_all()` emits lifecycle events |
+| **Pipeline failures** | Classifier HTTP failure returns clarification; worker HTTP failure returns graceful response; invalid JSON treated as plain text; tool lookup failure returns failure response; tool runtime exception returns failure response |
+| **Logging events** | `request_received`, `classifier_complete`, `router_selected`, `worker_complete`, `request_complete` all present; `total_latency_ms` and `duration_ms` in appropriate events |
+| **ExecutionContext** | `timestamp` is a float; `metadata` defaults to None; `metadata` can be set |
+| **Router debug** | `router_decision` logged at DEBUG when `debug_router=True`; not logged when `debug_router=False` |
+| Integration | JSON respond envelope unwrapped; tool call reads real temp file; plain-text fallback; unknown tool returns failure; tool execution logs carry `request_id` |
 
 ---
 
@@ -54,7 +60,7 @@ Expected output: **61 tests passed**.
 
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn distributions.cortx.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 This starts the ingress API on port 8000. Ollama must be running on the host for real requests to work.
@@ -72,7 +78,7 @@ docker compose up --build
 ```
 
 | Service | URL |
-|---|---|
+|---------|-----|
 | Ingress API | http://localhost:8000 |
 | OpenWebUI | http://localhost:3000 |
 
@@ -137,32 +143,26 @@ Expected: `intent` = `"execution"`, `source=prefix_match` in logs (no LLM call f
 
 ### Read a local file via the tool
 
-Create a test file on the **host**, then send a request that instructs the agent to read it.
-
 ```bash
-echo "This is my test file content." > /tmp/cortx_test.txt
-```
+echo "This is my test file content." > /tmp/coretex_test.txt
 
-> **Docker:** `docker-compose.yml` mounts the host's `/tmp` directory into the container read-only, so `/tmp/cortx_test.txt` is accessible inside the container. Create the file on the host **before** sending the request — no container restart required.
->
-> **Local (uvicorn):** The file is read directly from the host filesystem; no extra setup needed.
-
-```bash
 curl -s -X POST http://localhost:8000/ingest \
   -H "Content-Type: application/json" \
-  -d '{"input": "Read the file at /tmp/cortx_test.txt and tell me what it says"}' \
+  -d '{"input": "Read the file at /tmp/coretex_test.txt and tell me what it says"}' \
   | python3 -m json.tool
 ```
 
 Expected: the response contains `"This is my test file content."`.
 
-> **Note:** Whether the LLM produces a tool-call JSON or a direct response depends on model behaviour. A well-prompted model (llama3.2:3b or better) should emit the tool call. If it does not, the response will contain the model's best guess without file access.
+> **Docker:** `docker-compose.yml` mounts the host's `/tmp` directory into the container read-only. Create the file on the host before sending the request.
+
+> **Note:** Whether the LLM produces a tool-call JSON or a direct response depends on model behaviour. A well-prompted model (llama3.2:3b or better) should emit the tool call. If it does not, the response will be the model's best guess without file access.
 
 ### Directly test the tool execution layer (Python REPL)
 
 ```python
-from bootstrap_tools import tool_registry
-from core.tools import ToolExecutor, AgentAction, parse_agent_output
+from distributions.cortx.bootstrap import tool_registry
+from coretex.runtime.executor import ToolExecutor, AgentAction, parse_agent_output
 
 executor = ToolExecutor(tool_registry)
 
@@ -182,8 +182,8 @@ print(executor.execute(action))  # → "file content here"
 ### Missing file returns an error string (not a 500)
 
 ```python
-from core.tools import AgentAction, ToolExecutor
-from bootstrap_tools import tool_registry
+from distributions.cortx.bootstrap import tool_registry
+from coretex.runtime.executor import AgentAction, ToolExecutor
 
 executor = ToolExecutor(tool_registry)
 action = AgentAction(action="tool", tool="read_file", args={"path": "/nonexistent/file.txt"})
@@ -194,7 +194,7 @@ print(executor.execute(action))  # → "File not found: /nonexistent/file.txt"
 
 ## 6. Verify logging output
 
-### Enable verbose logging
+### Enable debug router logging
 
 ```bash
 DEBUG_ROUTER=true LOG_LEVEL=DEBUG docker compose up --build
@@ -210,20 +210,15 @@ docker compose logs -f ingress
 
 ```
 event=request_received      request_id=<id>
-event=classifier_result     request_id=<id> intent=execution confidence=0.95 source=prefix_match
-event=intent_router         request_id=<id> intent=execution route=worker confidence=0.95
-event=agent_selected        request_id=<id> agent=worker
-event=worker_start          request_id=<id> worker=worker intent=execution
-event=llm_call              request_id=<id> call=2/2 model=llama3.2:3b intent=execution
-event=worker_complete       request_id=<id> worker=worker latency_ms=...
-event=agent_output_received raw={"action":"tool","tool":"read_file",...}
-event=agent_action_parsed   action=tool tool=read_file
-event=executor_received     action=tool tool=read_file
-event=tool_lookup           tool=read_file
-event=tool_execute          tool=read_file args={...}
-event=tool_execute_complete tool=read_file result_type=str
-event=tool_result           tool=read_file result_type=str
-event=request_complete      request_id=<id> total_latency_ms=...
+event=classifier_start      request_id=<id> classifier=classifier_basic
+event=classifier_complete   request_id=<id> intent=execution confidence=0.95 duration_ms=312
+event=router_selected       request_id=<id> intent=execution handler=worker
+event=worker_start          request_id=<id> worker=worker_llm intent=execution
+event=worker_complete       request_id=<id> duration_ms=1450
+event=agent_output_received request_id=<id>
+event=tool_execute          tool=read_file request_id=<id>
+event=tool_execute_complete tool=read_file request_id=<id>
+event=request_complete      request_id=<id> intent=execution confidence=0.95 handler=worker total_latency_ms=1765
 ```
 
 ### Trace a specific request
@@ -247,16 +242,18 @@ curl http://localhost:8000/health
 
 ### Tests fail to import modules
 
-Ensure the Python path is set correctly. The `pytest.ini` file sets `pythonpath = .` which makes the project root importable. Run pytest from the project root:
+Ensure you are running pytest from the project root:
 
 ```bash
-cd /path/to/cortx
+cd /path/to/COREtex
 pytest tests/test_smoke.py -v
 ```
 
+The `pytest.ini` file sets `pythonpath = .` so all imports resolve correctly.
+
 ### Ollama errors in logs
 
-If you see `event=worker_error` or `event=classifier_fallback`, Ollama is not reachable. Check:
+If you see `event=pipeline_classifier_failure` or `event=pipeline_worker_failure`, Ollama is not reachable. Check:
 
 ```bash
 curl http://localhost:11434/api/tags
@@ -278,4 +275,4 @@ WORKER_MODEL=llama3.1:8b docker compose up --build
 
 ### Tool is not executing
 
-Check the logs for `event=agent_output_parse_error`. This means the LLM did not return valid JSON. Try a larger or more instruction-following model, or use the Python REPL approach above to test the tool layer directly without LLM involvement.
+Check the logs for `event=agent_output_parse_error` or `event=pipeline_agent_parse_failure`. This means the LLM did not return valid JSON. Try a larger model, or test the tool layer directly using the Python REPL approach above.

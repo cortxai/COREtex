@@ -25,6 +25,9 @@ services:
     restart: unless-stopped
 
   openwebui:
+    # IMPORTANT: pin to a specific release tag before deploying to production.
+    # Replace ':main' with a version such as 'v0.4.x' after verifying compatibility.
+    # ':main' is a floating tag and produces non-deterministic builds.
     image: ghcr.io/open-webui/open-webui:main
     container_name: openwebui
     ports:

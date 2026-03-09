@@ -1,10 +1,9 @@
-"""Tool system — registry, executor, action model, and output parser.
+"""Runtime executor — agent action model, tool executor, and output parser.
 
-This module is the heart of the v0.2.0 tool execution layer.
+This module is the v0.3.0 successor to core/tools.py.
 
-Design rules:
+Design rules (unchanged from v0.2.0):
   - Agents never execute tools directly — only ToolExecutor can run tools.
-  - Tools are registered once at startup via ToolRegistry.
   - Agent output must be strict JSON; parse_agent_output validates it.
   - All steps emit structured log events for full observability.
 """
@@ -13,80 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
+
+from coretex.registry.tool_registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Tool Definition
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class Tool:
-    name: str
-    description: str
-    input_schema: Dict[str, str]
-    function: Callable[..., Any]
-
-    def execute(self, args: Dict[str, Any], request_id: str = "") -> Any:
-        logger.info("event=tool_execute tool=%s request_id=%s args=%s", self.name, request_id, args)
-
-        result = self.function(**args)
-
-        logger.info(
-            "event=tool_execute_complete tool=%s request_id=%s result_type=%s",
-            self.name,
-            request_id,
-            type(result).__name__,
-        )
-
-        return result
-
-
-# ---------------------------------------------------------------------------
-# Tool Registry
-# ---------------------------------------------------------------------------
-
-
-class ToolRegistry:
-    def __init__(self) -> None:
-        self._tools: Dict[str, Tool] = {}
-
-    def register(
-        self,
-        name: str,
-        description: str,
-        input_schema: Dict[str, str],
-        function: Callable[..., Any],
-    ) -> None:
-        if name in self._tools:
-            raise ValueError(f"Tool already registered: {name}")
-
-        tool = Tool(
-            name=name,
-            description=description,
-            input_schema=input_schema,
-            function=function,
-        )
-        self._tools[name] = tool
-
-        logger.info("event=tool_registered tool=%s schema=%s", name, input_schema)
-
-    def get(self, name: str) -> Tool:
-        logger.info("event=tool_lookup tool=%s", name)
-
-        if name not in self._tools:
-            logger.error("event=tool_lookup_failed tool=%s", name)
-            raise ValueError(f"Unknown tool: {name}")
-
-        return self._tools[name]
-
-    def list(self) -> list:
-        logger.debug("event=tool_list_requested count=%d", len(self._tools))
-        return list(self._tools.keys())
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +25,15 @@ class ToolRegistry:
 
 
 class AgentAction:
+    """Represents a structured action emitted by the worker agent.
+
+    Attributes:
+        action: The action type — ``"respond"`` or ``"tool"``.
+        tool: The tool name to call (only when ``action == "tool"``).
+        args: Keyword arguments to pass to the tool function.
+        content: The direct response content (only when ``action == "respond"``).
+    """
+
     def __init__(
         self,
         action: Optional[str],
@@ -109,6 +48,7 @@ class AgentAction:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> AgentAction:
+        """Construct an AgentAction from a parsed JSON dict."""
         logger.info(
             "event=agent_action_parsed action=%s tool=%s",
             data.get("action"),
@@ -123,15 +63,41 @@ class AgentAction:
 
 
 # ---------------------------------------------------------------------------
-# Executor
+# Tool Executor
 # ---------------------------------------------------------------------------
 
 
 class ToolExecutor:
+    """The only component that can run tools. Dispatches on AgentAction.action.
+
+    Supported action types:
+        ``respond`` — return ``action.content`` directly without executing any tool.
+        ``tool``    — look up ``action.tool`` in the registry and call it with ``action.args``.
+
+    Any unknown action type raises ``ValueError``.
+    Tool lookup failure (unknown name) or tool runtime exceptions propagate to
+    the caller; the ``PipelineRunner`` catches them and returns a graceful failure response.
+    """
+
     def __init__(self, registry: ToolRegistry) -> None:
         self.registry = registry
 
     def execute(self, action: AgentAction, request_id: str = "") -> Any:
+        """Execute *action* and return the result.
+
+        Args:
+            action: The parsed agent action to execute.
+            request_id: Optional request ID for structured log correlation.
+
+        Returns:
+            For ``respond`` actions: the content string (may be ``None``).
+            For ``tool`` actions: the return value of the tool function.
+
+        Raises:
+            ValueError: For unknown action types or missing tool names.
+            ValueError: If the requested tool is not registered.
+            Exception: Any exception raised by the tool function itself.
+        """
         logger.info(
             "event=executor_received action=%s tool=%s request_id=%s",
             action.action,
@@ -178,6 +144,16 @@ def parse_agent_output(raw: str, request_id: str = "") -> AgentAction:
     Raises json.JSONDecodeError if *raw* is not valid JSON, or any other
     exception if the parsed structure is unusable.  The caller is responsible
     for graceful fallback.
+
+    Args:
+        raw: The raw string output from the worker LLM.
+        request_id: Optional request ID for structured log correlation.
+
+    Returns:
+        A parsed ``AgentAction`` instance.
+
+    Raises:
+        json.JSONDecodeError: If *raw* is not valid JSON.
     """
     logger.info(
         "event=agent_output_received request_id=%s raw=%r",

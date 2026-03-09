@@ -1,4 +1,4 @@
-"""Runtime configuration loaded from environment variables or a .env file."""
+"""Runtime configuration — settings loaded from environment variables or a .env file."""
 
 from pydantic_settings import BaseSettings
 
