@@ -37,7 +37,12 @@ class Tool:
 
 
 class ToolRegistry:
-    """Registry for tools callable by the ToolExecutor."""
+    """Registry for tools callable by the ToolExecutor.
+
+    All ``register`` calls raise ``ValueError`` on duplicate names.
+    ``get`` raises ``ValueError`` on unknown names and emits a structured
+    ``event=registry_lookup_failed`` log.
+    """
 
     def __init__(self) -> None:
         self._tools: Dict[str, Tool] = {}
@@ -49,8 +54,9 @@ class ToolRegistry:
         input_schema: Dict[str, str],
         function: Callable[..., Any],
     ) -> None:
+        """Register a tool under *name*. Raises ValueError if already registered."""
         if name in self._tools:
-            raise ValueError(f"Tool already registered: {name}")
+            raise ValueError(f"Component already registered: {name}")
 
         tool = Tool(
             name=name,
@@ -63,14 +69,16 @@ class ToolRegistry:
         logger.info("event=tool_registered tool=%s schema=%s", name, input_schema)
 
     def get(self, name: str) -> Tool:
+        """Return the tool registered as *name*. Raises ValueError if unknown."""
         logger.info("event=tool_lookup tool=%s", name)
 
         if name not in self._tools:
-            logger.error("event=tool_lookup_failed tool=%s", name)
-            raise ValueError(f"Unknown tool: {name}")
+            logger.error("event=registry_lookup_failed component=tool name=%s", name)
+            raise ValueError(f"Unknown component: {name}")
 
         return self._tools[name]
 
-    def list(self) -> list:
+    def list(self) -> list[str]:
+        """Return a list of all registered tool names."""
         logger.debug("event=tool_list_requested count=%d", len(self._tools))
         return list(self._tools.keys())

@@ -461,7 +461,7 @@ def test_tool_registry_unknown_tool_raises():
 
     registry = ToolRegistry()
 
-    with pytest.raises(ValueError, match="Unknown tool"):
+    with pytest.raises(ValueError, match="Unknown component"):
         registry.get("nonexistent")
 
 
@@ -570,7 +570,7 @@ def test_executor_unknown_tool_raises():
     executor = ToolExecutor(ToolRegistry())
     action = AgentAction(action="tool", tool="ghost", args={})
 
-    with pytest.raises(ValueError, match="Unknown tool"):
+    with pytest.raises(ValueError, match="Unknown component"):
         executor.execute(action)
 
 
