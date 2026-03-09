@@ -25,8 +25,10 @@ _loader = ModuleLoader(
     model_registry=model_registry,
 )
 
-_loader.load("modules.model_provider_ollama.module")
-_loader.load("modules.classifier_basic.module")
-_loader.load("modules.router_simple.module")
-_loader.load("modules.worker_llm.module")
-_loader.load("modules.tools_filesystem.module")
+_loader.load_all([
+    "modules.model_provider_ollama.module",
+    "modules.classifier_basic.module",
+    "modules.router_simple.module",
+    "modules.worker_llm.module",
+    "modules.tools_filesystem.module",
+])
