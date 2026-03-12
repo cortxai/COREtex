@@ -11,12 +11,12 @@ import logging
 import time
 from typing import Optional
 
-import httpx
 from pydantic import BaseModel, ValidationError
 from typing import Literal
 
 from coretex.config.settings import settings
 from coretex.interfaces.classifier import ClassificationResult, Classifier
+from coretex.interfaces.model_provider import ModelProvider, ModelProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,10 @@ _AMBIGUOUS_SHORT = (
 class ClassifierBasic(Classifier):
     """Intent classifier: deterministic prefix checks first, LLM call second."""
 
+    def __init__(self, model_provider: ModelProvider, model_provider_name: str) -> None:
+        self._model_provider = model_provider
+        self.model_provider_name = model_provider_name
+
     async def classify(self, user_input: str, request_id: str = "") -> ClassificationResult:
         """Classify *user_input* and return a ClassificationResult."""
         t_start = time.monotonic()
@@ -184,14 +188,9 @@ class ClassifierBasic(Classifier):
 
         for attempt in range(2):
             try:
-                raw = await _call_ollama(user_input, request_id)
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                body = ""
-                if hasattr(exc, "response") and exc.response is not None:
-                    try:
-                        body = exc.response.text[:200]
-                    except Exception:
-                        pass
+                raw = await self._call_model_provider(user_input, request_id)
+            except ModelProviderError as exc:
+                body = getattr(exc, "body", "")
                 logger.warning(
                     "event=classifier_retry request_id=%s attempt=%d reason=network_error "
                     "error_type=%s body=%r error=%r",
@@ -222,35 +221,34 @@ class ClassifierBasic(Classifier):
         )
         return ClassificationResult(intent="ambiguous", confidence=0.0, source="fallback")
 
-
-async def _call_ollama(user_input: str, request_id: str = "") -> str:
-    """Call Ollama /api/chat with a system message + user turn."""
-    if settings.debug_router:
-        logger.debug(
-            "event=classifier_prompt request_id=%s prompt=%r",
-            request_id, _SYSTEM_PROMPT[:500],
+    async def _call_model_provider(self, user_input: str, request_id: str = "") -> str:
+        """Call the configured model provider with a system message + user turn."""
+        if settings.debug_router:
+            logger.debug(
+                "event=classifier_prompt request_id=%s prompt=%r",
+                request_id, _SYSTEM_PROMPT[:500],
+            )
+        logger.info(
+            "event=llm_call request_id=%s call=1/2 model=%s model_provider=%s",
+            request_id,
+            settings.classifier_model,
+            self.model_provider_name,
         )
-    payload = {
-        "model": settings.classifier_model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_input},
-        ],
-        "format": "json",
-        "stream": False,
-        "options": {"temperature": 0, "top_p": 0.8, "num_predict": 32},
-    }
-    logger.info(
-        "event=llm_call request_id=%s call=1/2 model=%s",
-        request_id, settings.classifier_model,
-    )
-    async with httpx.AsyncClient(timeout=settings.classifier_timeout) as client:
-        resp = await client.post(f"{settings.ollama_base_url}/api/chat", json=payload)
-        resp.raise_for_status()
-        raw = resp.json()["message"]["content"]
+        raw = await self._model_provider.chat(
+            model=settings.classifier_model,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_input},
+            ],
+            format="json",
+            options={"temperature": 0, "top_p": 0.8, "num_predict": 32},
+            timeout=settings.classifier_timeout,
+            request_id=request_id,
+        )
         logger.debug(
             "event=classifier_raw_output request_id=%s output=%r",
-            request_id, raw,
+            request_id,
+            raw,
         )
         return raw
 

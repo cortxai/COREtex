@@ -17,4 +17,10 @@ def register(
     model_registry: ModelProviderRegistry,
 ) -> None:
     """Register the basic classifier."""
-    module_registry.register_classifier("classifier_basic", ClassifierBasic())
+    module_registry.register_classifier(
+        "classifier_basic",
+        ClassifierBasic(
+            model_provider=model_registry.get("ollama"),
+            model_provider_name="ollama",
+        ),
+    )

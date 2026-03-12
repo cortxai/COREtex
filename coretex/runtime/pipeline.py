@@ -23,8 +23,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Literal, Optional, Tuple
 
-import httpx
-
+from coretex.interfaces.model_provider import ModelProviderError
 from coretex.registry.module_registry import ModuleRegistry
 from coretex.registry.tool_registry import ToolRegistry
 from coretex.runtime.context import ExecutionContext
@@ -164,13 +163,19 @@ class PipelineRunner:
         # Step 1: Classify
         # ------------------------------------------------------------------
         classifier = self._modules.get_classifier(self._classifier_name)
+        classifier_provider = getattr(classifier, "model_provider_name", "unknown")
 
-        logger.info("event=classifier_start request_id=%s classifier=%s", context.request_id, self._classifier_name)
+        logger.info(
+            "event=classifier_start request_id=%s classifier=%s model_provider=%s",
+            context.request_id,
+            self._classifier_name,
+            classifier_provider,
+        )
         t_classify_start = time.monotonic()
 
         try:
             classification = await classifier.classify(context.user_input, context.request_id)
-        except (httpx.HTTPError, httpx.RequestError) as exc:
+        except ModelProviderError as exc:
             logger.error(
                 "event=pipeline_classifier_failure request_id=%s error_type=%s error=%r",
                 context.request_id,
@@ -223,16 +228,18 @@ class PipelineRunner:
             response_text = CLARIFY_RESPONSE
             t_worker = t_classified
         else:
+            worker = self._modules.get_worker(self._worker_name)
+            worker_provider = getattr(worker, "model_provider_name", "unknown")
             logger.info(
-                "event=worker_start request_id=%s worker=%s intent=%s",
+                "event=worker_start request_id=%s worker=%s intent=%s model_provider=%s",
                 context.request_id,
                 self._worker_name,
                 context.intent,
+                worker_provider,
             )
             t_worker_start = time.monotonic()
 
             try:
-                worker = self._modules.get_worker(self._worker_name)
                 response_text = await worker.generate(
                     context.user_input, context.intent, context.request_id
                 )
@@ -263,15 +270,10 @@ class PipelineRunner:
                     )
                     response_text = _WORKER_FAILURE_RESPONSE
 
-            except (httpx.HTTPError, httpx.RequestError) as exc:
-                # WorkerFailure — Ollama unreachable or HTTP error.
-                status = getattr(exc.response, "status_code", "N/A") if hasattr(exc, "response") else "N/A"
-                body = ""
-                if hasattr(exc, "response") and exc.response is not None:
-                    try:
-                        body = exc.response.text[:200]
-                    except Exception:
-                        pass
+            except ModelProviderError as exc:
+                # WorkerFailure — model provider unreachable or backend response failure.
+                status = getattr(exc, "status_code", "N/A")
+                body = getattr(exc, "body", "")
                 logger.error(
                     "event=pipeline_worker_failure request_id=%s error_type=%s status=%s body=%r error=%r",
                     context.request_id,

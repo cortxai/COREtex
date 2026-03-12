@@ -24,7 +24,7 @@ class ModelProviderRegistry:
     def register(self, name: str, provider: ModelProvider) -> None:
         """Register *provider* under *name*. Raises ValueError if already registered."""
         if name in self._providers:
-            raise ValueError(f"Component already registered: {name}")
+            raise ValueError(f"Model provider already registered: {name}")
         self._providers[name] = provider
         logger.info("event=model_provider_registered name=%s", name)
 
@@ -32,7 +32,7 @@ class ModelProviderRegistry:
         """Return the provider registered as *name*. Raises ValueError if unknown."""
         if name not in self._providers:
             logger.error("event=registry_lookup_failed component=model_provider name=%s", name)
-            raise ValueError(f"Unknown component: {name}")
+            raise ValueError(f"Unknown model provider: {name}")
         return self._providers[name]
 
     def list(self) -> list[str]:

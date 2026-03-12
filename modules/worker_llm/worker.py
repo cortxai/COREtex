@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import logging
 
-import httpx
-
 from coretex.config.settings import settings
+from coretex.interfaces.model_provider import ModelProvider
 from coretex.interfaces.worker import Worker
 
 logger = logging.getLogger(__name__)
@@ -52,10 +51,14 @@ _FALLBACK_PROMPT = _PROMPTS["execution"]
 class WorkerLLM(Worker):
     """Worker that generates responses using the Ollama /api/generate endpoint."""
 
+    def __init__(self, model_provider: ModelProvider, model_provider_name: str) -> None:
+        self._model_provider = model_provider
+        self.model_provider_name = model_provider_name
+
     async def generate(self, user_input: str, intent: str, request_id: str = "") -> str:
         """Generate a response for *user_input* given *intent*.
 
-        Raises httpx.HTTPError on network or HTTP failures (caller handles gracefully).
+        Raises model-provider HTTP errors on network or HTTP failures (caller handles gracefully).
         """
         prompt = _PROMPTS.get(intent, _FALLBACK_PROMPT) + user_input
 
@@ -65,18 +68,17 @@ class WorkerLLM(Worker):
                 request_id, prompt[:500],
             )
 
-        payload = {
-            "model": settings.worker_model,
-            "prompt": prompt,
-            "stream": False,
-            "options": {"num_predict": settings.max_tokens},
-        }
         logger.info(
-            "event=llm_call request_id=%s call=2/2 model=%s intent=%s",
-            request_id, settings.worker_model, intent,
+            "event=llm_call request_id=%s call=2/2 model=%s intent=%s model_provider=%s",
+            request_id,
+            settings.worker_model,
+            intent,
+            self.model_provider_name,
         )
-        async with httpx.AsyncClient(timeout=settings.worker_timeout) as client:
-            resp = await client.post(f"{settings.ollama_base_url}/api/generate", json=payload)
-            resp.raise_for_status()
-            response_text = resp.json()["response"]
-        return response_text
+        return await self._model_provider.generate(
+            model=settings.worker_model,
+            prompt=prompt,
+            num_predict=settings.max_tokens,
+            timeout=settings.worker_timeout,
+            request_id=request_id,
+        )

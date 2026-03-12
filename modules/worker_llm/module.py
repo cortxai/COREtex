@@ -14,4 +14,10 @@ def register(
     model_registry: ModelProviderRegistry,
 ) -> None:
     """Register the LLM worker."""
-    module_registry.register_worker("worker_llm", WorkerLLM())
+    module_registry.register_worker(
+        "worker_llm",
+        WorkerLLM(
+            model_provider=model_registry.get("ollama"),
+            model_provider_name="ollama",
+        ),
+    )
