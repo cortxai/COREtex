@@ -21,10 +21,10 @@ The entire test suite mocks all Ollama calls, so it runs in any environment with
 pip install -r requirements.txt
 
 # Run all tests
-pytest tests/test_smoke.py -v
+python3 -m pytest tests/test_smoke.py -v
 ```
 
-Expected output: **129 tests passed**.
+Expected output: **151 tests passed**.
 
 ### What the tests cover
 
@@ -47,9 +47,12 @@ Expected output: **129 tests passed**.
 | Filesystem tool | Reads existing file; returns error string for missing file |
 | Module bootstrap | `read_file` is registered at startup |
 | **Registry validation** | Duplicate classifier/router/worker/model_provider raises; unknown classifier/router/worker/model_provider raises; `registry_lookup_failed` log emitted; pipeline duplicate raises `"Pipeline already registered: <name>"`; unknown pipeline raises `"Unknown pipeline: <name>"` |
+| **Model provider system** | `ModelProviderRegistry.list()`; model-provider-specific duplicate/unknown errors; `OllamaProvider.generate()` and `.chat()` payloads; provider start/complete observability events |
+| **Provider error handling** | Ollama transport/status failures are wrapped in `ModelProviderError` subclasses so classifier and pipeline failure paths stay provider-agnostic |
+| **Provider wiring** | Classifier and worker use injected model providers; prefix matches skip provider calls; module registration wires the default `"ollama"` provider into both components |
 | **ModuleLoader** | Valid module loads; missing `register()` raises; wrong signature raises; empty registration logs warning; `ImportError` raises; `load_all()` emits lifecycle events |
 | **Pipeline failures** | Classifier HTTP failure returns clarification; worker HTTP failure returns graceful response; invalid JSON treated as plain text; tool lookup failure returns failure response; tool runtime exception returns failure response |
-| **Logging events** | `request_received`, `classifier_complete`, `router_selected`, `worker_complete`, `request_complete` all present; `total_latency_ms` and `duration_ms` in appropriate events; `pipeline_selected` with pipeline name |
+| **Logging events** | `request_received`, `classifier_complete`, `router_selected`, `worker_complete`, `request_complete` all present; `classifier_start`/`worker_start` include `model_provider`; provider start/complete events are emitted; `total_latency_ms` and `duration_ms` are present where expected |
 | **ExecutionContext** | `timestamp` is a float; `metadata` defaults to None; `metadata` can be set |
 | **Router debug** | `router_decision` logged at DEBUG when `debug_router=True`; not logged when `debug_router=False` |
 | **PipelineStep** | Valid component types accepted; invalid type raises `ValueError`; empty type raises `ValueError` |
@@ -70,6 +73,8 @@ uvicorn distributions.cortx.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 This starts the ingress API on port 8000. Ollama must be running on the host for real requests to work.
+
+The default model provider is `"ollama"`, so no extra provider configuration is required for local validation.
 
 ---
 
@@ -217,10 +222,14 @@ docker compose logs -f ingress
 ```
 event=pipeline_selected     request_id=<id> pipeline=default
 event=request_received      request_id=<id>
-event=classifier_start      request_id=<id> classifier=classifier_basic
+event=classifier_start      request_id=<id> classifier=classifier_basic model_provider=ollama
+event=model_provider_chat_start request_id=<id> model_provider=ollama model=llama3.2:3b
+event=model_provider_chat_complete request_id=<id> model_provider=ollama model=llama3.2:3b duration_ms=312
 event=classifier_complete   request_id=<id> intent=execution confidence=0.95 duration_ms=312
 event=router_selected       request_id=<id> intent=execution handler=worker
-event=worker_start          request_id=<id> worker=worker_llm intent=execution
+event=worker_start          request_id=<id> worker=worker_llm intent=execution model_provider=ollama
+event=model_provider_generate_start request_id=<id> model_provider=ollama model=llama3.2:3b
+event=model_provider_generate_complete request_id=<id> model_provider=ollama model=llama3.2:3b duration_ms=1450
 event=worker_complete       request_id=<id> duration_ms=1450
 event=agent_output_received request_id=<id>
 event=tool_execute          tool=read_file request_id=<id>
@@ -253,7 +262,7 @@ Ensure you are running pytest from the project root:
 
 ```bash
 cd /path/to/COREtex
-pytest tests/test_smoke.py -v
+python3 -m pytest tests/test_smoke.py -v
 ```
 
 The `pytest.ini` file sets `pythonpath = .` so all imports resolve correctly.
@@ -267,6 +276,8 @@ curl http://localhost:11434/api/tags
 ```
 
 If using Docker, the ingress container reaches Ollama via `host.docker.internal:11434`. Ensure Ollama is running on the host and is not firewall-blocked.
+
+If the classifier and worker are both healthy but you do not see `model_provider_*` events, confirm you are running the updated v0.5 code path and that the default `model_provider_ollama` module was loaded during bootstrap.
 
 ### Model not found
 

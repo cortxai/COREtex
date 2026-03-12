@@ -1,6 +1,6 @@
 # COREtex Runtime
 
-> Version: v0.3.x Stabilisation
+> Version: v0.5.x Model Provider System
 
 ---
 
@@ -71,8 +71,15 @@ Registries are the extension points between the runtime and modules.
 
 ### Registry Safety Rules
 
-- **Duplicate registration** raises `ValueError("Component already registered: <name>")`
-- **Unknown lookup** raises `ValueError("Unknown component: <name>")` and emits `event=registry_lookup_failed`
+- `ToolRegistry` and `ModuleRegistry` use the generic component messages:
+  - duplicate → `ValueError("Component already registered: <name>")`
+  - unknown → `ValueError("Unknown component: <name>")` + `event=registry_lookup_failed`
+- `ModelProviderRegistry` uses model-provider-specific messages:
+  - duplicate → `ValueError("Model provider already registered: <name>")`
+  - unknown → `ValueError("Unknown model provider: <name>")` + `event=registry_lookup_failed`
+- `PipelineRegistry` uses pipeline-specific messages:
+  - duplicate → `ValueError("Pipeline already registered: <name>")`
+  - unknown → `ValueError("Unknown pipeline: <name>")` + `event=registry_lookup_failed`
 
 ---
 
@@ -102,7 +109,7 @@ router.route(intent)
     └─► return clarification response
     │
 [if handler == "worker"]
-    ├─► event=worker_start
+    ├─► event=worker_start  (includes model_provider)
     ├─► worker.generate(user_input, intent)
     ├─► event=worker_complete  (includes duration_ms)
     │
@@ -135,6 +142,22 @@ class ExecutionContext:
 
 ---
 
+## Model Provider Flow
+
+v0.5 formalises model access behind the `ModelProvider` interface:
+
+```python
+class ModelProvider(ABC):
+    async def generate(self, model: str, prompt: str, **kwargs) -> str: ...
+    async def chat(self, model: str, messages: list, **kwargs) -> str: ...
+```
+
+The default `model_provider_ollama` module registers `"ollama"` in `ModelProviderRegistry`. During bootstrap, `classifier_basic.module` and `worker_llm.module` retrieve that provider and inject it into `ClassifierBasic` and `WorkerLLM`.
+
+This keeps the runtime deterministic: pipeline selection, routing, and tool execution stay unchanged while inference backends remain replaceable.
+
+---
+
 ## Failure Behaviour
 
 All failure modes are handled gracefully — no pipeline error produces an unhandled exception.
@@ -154,8 +177,14 @@ All failure modes are handled gracefully — no pipeline error produces an unhan
 All runtime log events use structured `key=value` format:
 
 ```
+event=classifier_start request_id=abc123 classifier=classifier_basic model_provider=ollama
+event=model_provider_chat_start request_id=abc123 model_provider=ollama model=llama3.2:3b
+event=model_provider_chat_complete request_id=abc123 model_provider=ollama model=llama3.2:3b duration_ms=312
 event=classifier_complete request_id=abc123 intent=execution confidence=0.92 duration_ms=312
 event=router_selected request_id=abc123 intent=execution handler=worker
+event=worker_start request_id=abc123 worker=worker_llm intent=execution model_provider=ollama
+event=model_provider_generate_start request_id=abc123 model_provider=ollama model=llama3.2:3b
+event=model_provider_generate_complete request_id=abc123 model_provider=ollama model=llama3.2:3b duration_ms=1450
 event=worker_complete request_id=abc123 duration_ms=1450
 event=request_complete request_id=abc123 intent=execution confidence=0.92 handler=worker classifier_latency_ms=312 worker_latency_ms=1450 total_latency_ms=1765
 ```
@@ -192,4 +221,4 @@ event_bus.emit_warning("module_registered_nothing", module="my_module")
 event_bus.emit_error("pipeline_classifier_failure", request_id=request_id, error_type=...)
 ```
 
-In v0.3.x the EventBus is a structured log wrapper. A full async pub/sub event system is planned for v0.6.0.
+In v0.5.x the EventBus remains a structured log wrapper. A full async pub/sub event system is planned for a later phase.

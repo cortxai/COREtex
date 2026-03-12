@@ -1,19 +1,21 @@
 # Implementation Description — COREtex Runtime Platform
 
-> This document describes the current state of the implementation as of v0.4.x (Pipeline System).
+> This document describes the current state of the implementation as of v0.5.x (Model Provider System).
 > It is intended to be read as context by an LLM when planning future phases of the project.
 
 ---
 
 ## Purpose
 
-COREtex is a **local agentic runtime platform** that routes user requests through a two-stage LLM pipeline (classifier → worker) using locally-hosted models via [Ollama](https://ollama.com), then passes the agent's JSON output through a deterministic tool execution layer.
+COREtex is a **local agentic runtime platform** that routes user requests through a two-stage LLM pipeline (classifier → worker), with model inference routed through a formal `ModelProvider` abstraction. The default deployment uses locally-hosted models via [Ollama](https://ollama.com), then passes the agent's JSON output through a deterministic tool execution layer.
 
 v0.3.0 restructured the codebase from a monolithic `app/` package into a **modular runtime** with three distinct layers: the `coretex/` runtime package (interfaces, registries, execution engine), `modules/` (pluggable component implementations), and `distributions/` (assembled applications).
 
 v0.3.x Stabilisation hardened the runtime with: explicit pipeline failure categories and graceful handling, full structured logging lifecycle, registry validation with consistent error messages, ModuleLoader signature validation and empty-registration detection, `load_all()` lifecycle events, router debug logging, and expanded test coverage to 106 tests.
 
 v0.4.0 Pipeline System introduced: `PipelineStep` and `PipelineDefinition` dataclasses, a fully validated `PipelineRegistry` with pipeline-specific error messages, `make_default_pipeline()` factory, a refactored `PipelineRunner` accepting a `PipelineDefinition`, `event=pipeline_selected` observability logging, and default pipeline registration in the bootstrap. Test suite expanded to 129 tests.
+
+v0.5.0 Model Provider System routes classifier and worker inference through injected `ModelProvider` instances. `ModelProviderRegistry` now uses model-provider-specific error messages, `OllamaProvider` emits provider lifecycle events, bootstrap wiring remains backward compatible through the default `"ollama"` provider, and the test suite has expanded to 151 tests.
 
 ---
 
@@ -27,10 +29,12 @@ User (browser)
                     └─► PipelineRunner.run(ExecutionContext)
                           │  [pipeline_selected: pipeline=default]
                           ├─► ClassifierBasic.classify()  → ClassificationResult(intent, confidence)
+                          │      └─► ModelProvider.chat() → backend inference
                           ├─► RouterSimple.route(intent)  → handler name
                           └─► WorkerLLM.generate()        → JSON action envelope
-                                      │
-                               parse_agent_output          → AgentAction
+                                 └─► ModelProvider.generate() → backend inference
+                                       │
+                                parse_agent_output          → AgentAction
                                       │
                                ToolExecutor.execute        → tool result or direct content
 ```
@@ -71,13 +75,13 @@ coretex/
     __init__.py
     tool_registry.py    — Tool dataclass, ToolRegistry (raises ValueError on dup/unknown, logs registry_lookup_failed)
     module_registry.py  — ModuleRegistry: classifier/router/worker (raises ValueError on dup/unknown, logs registry_lookup_failed)
-    model_registry.py   — ModelProviderRegistry (raises ValueError on dup/unknown, logs registry_lookup_failed)
+    model_registry.py   — ModelProviderRegistry (model-provider-specific dup/unknown messages, logs registry_lookup_failed)
     pipeline_registry.py — PipelineRegistry: raises "Pipeline already registered: <name>" / "Unknown pipeline: <name>", logs registry_lookup_failed
   runtime/
     __init__.py
     context.py          — ExecutionContext dataclass (request_id, input, intent, confidence, handler, t_start, timestamp, metadata)
     events.py           — EventBus (emit/emit_warning/emit_error structured log wrappers)
-    loader.py           — ModuleLoader (signature validation, empty-registration warning, load_all() lifecycle events)
+    loader.py           — ModuleLoader (signature validation, empty-registration warning, model-provider-aware registration counting, load_all() lifecycle events)
     executor.py         — AgentAction, ToolExecutor, parse_agent_output
     pipeline.py         — VALID_STEP_TYPES, PipelineStep, PipelineDefinition, make_default_pipeline(),
                           DEFAULT_PIPELINE_NAME, PipelineRunner (pipeline_selected event, full log lifecycle, explicit failure categories)
@@ -89,7 +93,7 @@ modules/
   __init__.py
   classifier_basic/
     __init__.py
-    classifier.py       — ClassifierBasic(Classifier): prefix checks + Ollama LLM call
+    classifier.py       — ClassifierBasic(Classifier): prefix checks + injected ModelProvider.chat()
     module.py           — register(module_registry, tool_registry, model_registry)
   router_simple/
     __init__.py
@@ -97,7 +101,7 @@ modules/
     module.py
   worker_llm/
     __init__.py
-    worker.py           — WorkerLLM(Worker): _PROMPTS dict + Ollama LLM call
+    worker.py           — WorkerLLM(Worker): _PROMPTS dict + injected ModelProvider.generate()
     module.py
   tools_filesystem/
     __init__.py
@@ -119,7 +123,7 @@ distributions/
                           registers default PipelineDefinition in PipelineRegistry
 
 tests/
-  test_smoke.py         — All tests (129 unit + integration via TestClient, Ollama fully mocked)
+  test_smoke.py         — All tests (151 unit + integration via TestClient, Ollama fully mocked)
 
 docs/
   runtime.md            — Runtime architecture, pipeline execution, failure behaviour
@@ -163,6 +167,7 @@ ABCs establishing contracts:
 - **`Router`** — `route(intent: str, request_id: str = "", **kwargs) -> str`
 - **`Worker`** — `async generate(input: str, intent: str, request_id: str = "") -> str`
 - **`ModelProvider`** — `async generate(model, prompt, **kwargs) -> str`, `async chat(model, messages, **kwargs) -> str`
+- **`ModelProviderError` hierarchy** — transport-agnostic provider exceptions used for graceful pipeline failure handling
 - **`ClassificationResult`** — `@dataclass` with `intent: str, confidence: float, source: str`
 
 ---
@@ -170,8 +175,9 @@ ABCs establishing contracts:
 ### `coretex/registry/`
 
 All four registries follow identical safety rules:
-- `register()` raises `ValueError("Component already registered: <name>")` on duplicates
-- `get()` raises `ValueError("Unknown component: <name>")` on unknown name AND logs `event=registry_lookup_failed component=<type> name=<name>`
+- `ToolRegistry` / `ModuleRegistry` keep the generic component messages.
+- `ModelProviderRegistry.register()` raises `ValueError("Model provider already registered: <name>")`.
+- `ModelProviderRegistry.get()` raises `ValueError("Unknown model provider: <name>")` and logs `event=registry_lookup_failed component=model_provider name=<name>`.
 
 - **`ToolRegistry`** — stores `Tool` dataclasses. `register(name, desc, schema, fn)`, `get(name)`, `list()`.
 - **`Tool`** — `@dataclass` with `name`, `description`, `input_schema`, `function`. `execute(args, request_id)` logs `event=tool_execute` / `event=tool_execute_complete`.
@@ -208,8 +214,9 @@ class ExecutionContext:
 2. Check `mod.register` exists and is callable — raises `ValueError("Module '...' has no register() function")`
 3. Check signature has all three params (`module_registry`, `tool_registry`, `model_registry`) — raises `ValueError("Invalid module register() signature ...")`
 4. Execute `mod.register(...)`, count new registrations
-5. If 0 components registered: `logger.warning("event=module_loaded ... warning=module_registered_nothing")`
-6. Otherwise: `logger.info("event=module_loaded module=... registered_components=N")`
+5. Count registrations across modules, tools, and model providers.
+6. If 0 components registered: `logger.warning("event=module_loaded ... warning=module_registered_nothing")`
+7. Otherwise: `logger.info("event=module_loaded module=... registered_components=N")`
 
 `load_all(paths)` emits `event=module_loading_start` and `event=module_loading_complete`.
 
@@ -243,10 +250,12 @@ Full log lifecycle:
 ```
 event=pipeline_selected      (includes pipeline name)
 event=request_received
-event=classifier_start
+event=classifier_start       (includes classifier name and model_provider)
+event=model_provider_chat_start / event=model_provider_chat_complete
 event=classifier_complete    (includes intent, confidence, duration_ms)
 event=router_selected        (includes intent, handler)
-event=worker_start           (includes worker name, intent)
+event=worker_start           (includes worker name, intent, model_provider)
+event=model_provider_generate_start / event=model_provider_generate_complete
 event=worker_complete        (includes duration_ms)
 event=agent_output_received
 event=tool_execute / event=tool_execute_complete
@@ -273,9 +282,9 @@ Lowercases input and matches against prefix lists:
 - `_PLANNING_PREFIXES` → `intent="planning", confidence=0.95`
 - `_AMBIGUOUS_SHORT` → `intent="ambiguous", confidence=0.95`
 
-**Stage 2 — LLM call via `_call_ollama()`**
+**Stage 2 — Inference via injected `ModelProvider`**
 
-Calls Ollama `/api/chat`. Up to 2 attempts. Falls back to `ClassificationResult(intent="ambiguous", confidence=0.0)` after 2 failures.
+Calls `model_provider.chat(model=settings.classifier_model, ...)`. Up to 2 attempts. Falls back to `ClassificationResult(intent="ambiguous", confidence=0.0)` after 2 failures.
 
 **`_parse()` normalisation:** strip markdown fences → `json.loads` → `_ClassifierResponse` Pydantic validation → field-name scan → alias map → graceful `ambiguous` fallback.
 
@@ -300,7 +309,11 @@ ROUTES = {
 
 ### `modules/worker_llm/worker.py`
 
-Intent-aware via `_PROMPTS` dict (execution, planning, analysis, `_FALLBACK_PROMPT`). All prompts instruct the LLM to return a JSON action envelope. User input is appended with `+` — never `str.format()`.
+Intent-aware via `_PROMPTS` dict (execution, planning, analysis, `_FALLBACK_PROMPT`). All prompts instruct the LLM to return a JSON action envelope. User input is appended with `+` — never `str.format()`. Generation is delegated to `model_provider.generate(model=settings.worker_model, ...)`.
+
+### `modules/model_provider_ollama/provider.py`
+
+Implements `ModelProvider.generate()` and `ModelProvider.chat()` against Ollama's `/api/generate` and `/api/chat` endpoints. Uses `settings.worker_timeout` / `settings.classifier_timeout`, emits `event=model_provider_generate_start`, `event=model_provider_generate_complete`, `event=model_provider_chat_start`, and `event=model_provider_chat_complete`, and returns plain strings back to the classifier/worker layers.
 
 ---
 
@@ -312,7 +325,7 @@ Intent-aware via `_PROMPTS` dict (execution, planning, analysis, `_FALLBACK_PROM
 
 ### `distributions/cortx/bootstrap.py`
 
-Creates four registry singletons (`module_registry`, `tool_registry`, `model_registry`, `pipeline_registry`). Calls `ModuleLoader.load_all([...])` with all five module paths. Registers the default `PipelineDefinition` (via `make_default_pipeline()`) in `pipeline_registry` under the name `"default"`. Imported by `main.py` at module load time.
+Creates four registry singletons (`module_registry`, `tool_registry`, `model_registry`, `pipeline_registry`). Calls `ModuleLoader.load_all([...])` with all five module paths, loading `modules.model_provider_ollama.module` before classifier/worker modules so the default provider is available for injection. Registers the default `PipelineDefinition` (via `make_default_pipeline()`) in `pipeline_registry` under the name `"default"`. Imported by `main.py` at module load time.
 
 ---
 
@@ -338,7 +351,7 @@ The `PipelineRunner` is built by retrieving the `"default"` `PipelineDefinition`
 
 ## Testing
 
-All tests in `tests/test_smoke.py`. **129 tests** covering all components.
+All tests in `tests/test_smoke.py`. **151 tests** covering all components.
 
 **Test runner:** `pytest tests/test_smoke.py -v`
 
@@ -347,7 +360,7 @@ Async tests use `@pytest.mark.anyio`. All Ollama calls mocked with `AsyncMock`.
 Test categories:
 - Router unit tests (pure Python)
 - Classifier internal validation and parsing
-- Classifier behaviour with mocked Ollama
+- Classifier behaviour with injected model providers
 - `/ingest` happy path and edge cases
 - `/v1/chat/completions` shim
 - Health and model list endpoints
@@ -358,6 +371,7 @@ Test categories:
 - `parse_agent_output`: valid, invalid JSON
 - Filesystem tool
 - Registry duplicate and unknown-lookup tests (all four registries, including pipeline-specific messages)
+- Model provider payload, logging, and registration tests
 - ModuleLoader: valid module, missing register(), wrong signature, empty registration, ImportError, load_all() lifecycle
 - Pipeline failure scenarios: classifier HTTP failure, worker HTTP failure, invalid JSON, tool lookup failure, tool runtime exception
 - Logging event tests: all key pipeline events present including `pipeline_selected`, latency fields present
@@ -378,6 +392,7 @@ Test categories:
 - **v0.3.0**: Runtime extraction — `coretex/` package (interfaces, registries, executor, pipeline, loader, context, events, config); `modules/`; `distributions/cortx/`; updated Dockerfile; removed legacy `app/`, `core/`, `tools/`.
 - **v0.3.x Stabilisation**: Hardened pipeline with explicit failure categories and full log lifecycle; standardised registry validation; ModuleLoader signature validation, empty-registration warning, `load_all()` lifecycle events; `ExecutionContext` metadata and timestamp fields; router `debug_router` logging; expanded test suite (64 → 106 tests); `docs/runtime.md`, `docs/module_development.md`, `docs/distributions.md`.
 - **v0.4.0 Pipeline System**: `PipelineStep` and `PipelineDefinition` dataclasses with runtime validation; `PipelineRegistry` updated with pipeline-specific error messages (`"Pipeline already registered: <name>"`, `"Unknown pipeline: <name>"`); `PipelineRunner` refactored to accept `PipelineDefinition` and emit `event=pipeline_selected`; `make_default_pipeline()` factory; default pipeline registered in bootstrap; `main.py` updated to retrieve pipeline from registry; test suite expanded from 106 → 129 tests.
+- **v0.5.0 Model Provider System**: `ClassifierBasic` and `WorkerLLM` now use injected `ModelProvider` instances; `ModelProviderRegistry` has provider-specific errors; `OllamaProvider` emits provider lifecycle events; bootstrap loads and wires the default `"ollama"` provider automatically; test suite expanded from 129 → 151 tests.
 
 ---
 
@@ -390,6 +405,6 @@ Test categories:
 - Authentication / authorisation
 - Persistent storage of any kind
 - Rate limiting
-- Multiple model backends (only Ollama supported)
+- Additional model-provider implementations beyond Ollama
 - Async tool execution
 - Plugin dependency graphs

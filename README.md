@@ -22,7 +22,7 @@ Over time, CortX AI aims to evolve into a foundation for building intelligent so
 
 ---
 
-## What CortX AI can do today (v0.4.x)
+## What CortX AI can do today (v0.5.x)
 
 - **Understand intent** — classifies every request as `execution`, `planning`, `analysis`, or `ambiguous` using a local LLM, with deterministic prefix checks for common patterns.
 - **Route deterministically** — maps intent to the correct execution path using a pure Python dict, not another LLM.
@@ -31,12 +31,14 @@ Over time, CortX AI aims to evolve into a foundation for building intelligent so
 - **Read files** — the built-in `read_file` tool reads any local file by path and returns its contents.
 - **Observe everything** — every request gets a unique ID; every step emits a structured `event=<name> key=value` log including `event=pipeline_selected`.
 - **Run configurable pipelines** — the `PipelineRegistry` holds named `PipelineDefinition` objects; the `PipelineRunner` dynamically resolves components from the definition at runtime.
+- **Swap inference backends cleanly** — classifier and worker inference now run through the `ModelProvider` abstraction, so the runtime can support different providers without changing pipeline logic.
+- **Keep provider wiring explicit** — the default `"ollama"` provider is registered once, then injected into the classifier and worker at module registration time.
 - **Load components as modules** — classifiers, routers, workers, and tools are registered dynamically at startup via the module loader, with signature validation and lifecycle events.
 - **Fail gracefully** — classifier failures, worker failures, tool lookup errors, and tool exceptions all produce safe fallback responses, never unhandled 500s.
 
 ---
 
-## Architecture (v0.4.x)
+## Architecture (v0.5.x)
 
 COREtex v0.4 is structured as a **runtime platform** with three layers:
 
@@ -52,7 +54,7 @@ modules/            ← Components implementing interfaces, registered at startu
   router_simple/    ← Deterministic dict-based router
   worker_llm/       ← LLM response generator
   tools_filesystem/ ← read_file tool
-  model_provider_ollama/ ← Ollama inference backend
+  model_provider_ollama/ ← Default Ollama-backed ModelProvider implementation
 
 distributions/
   cortx/      ← FastAPI ingress + OpenWebUI integration
@@ -88,18 +90,19 @@ User (browser)
         └─► POST /v1/chat/completions  (cortx, port 8000)
               └─► POST /ingest  (internal orchestration via PipelineRunner)
                     │  pipeline_selected log (pipeline=default)
-                    ├─► Classifier  — LLM call 1/2 → ClassificationResult
+                    ├─► Classifier  — LLM call 1/2 via ModelProvider → ClassificationResult
                     ├─► Router      — pure Python dict lookup → handler
-                    └─► Worker      — LLM call 2/2 → JSON action envelope
-                                         │
-                                    Action Parser
-                                         │
-                                    Tool Executor  → Tool Result
+                    └─► Worker      — LLM call 2/2 via ModelProvider → JSON action envelope
+                                          │
+                                     Action Parser
+                                          │
+                                     Tool Executor  → Tool Result
 ```
 
-- **Classifier** — calls Ollama, returns one of `execution | planning | analysis | ambiguous`. Deterministic prefix checks short-circuit common patterns before any LLM call.
+- **Classifier** — uses the configured `ModelProvider.chat()` implementation and returns one of `execution | planning | analysis | ambiguous`. Deterministic prefix checks short-circuit common patterns before any LLM call.
 - **Router** — a Python dict. Given the same intent, always returns the same handler. No LLM involved.
-- **Worker** — selects an intent-aware prompt template, calls Ollama, and returns a JSON action envelope.
+- **Worker** — selects an intent-aware prompt template, calls `ModelProvider.generate()`, and returns a JSON action envelope.
+- **Model providers** — backends such as `model_provider_ollama` implement the inference contract. Existing deployments continue to use the default `"ollama"` provider automatically.
 - **Action Parser** — parses the agent's JSON output into a typed `AgentAction`.
 - **Tool Executor** — the only component that can run tools. Looks up the tool by name in the `ToolRegistry` and calls it deterministically. Agents never execute tools directly.
 - **OpenWebUI** — UI only. `ENABLE_OLLAMA_API=false`. It cannot bypass the pipeline.
@@ -166,6 +169,8 @@ OLLAMA_BASE_URL=http://192.168.1.50:11434 docker compose up --build
 CLASSIFIER_MODEL=llama3.2:3b WORKER_MODEL=llama3.1:8b docker compose up --build
 ```
 
+The default model provider is `"ollama"`. No extra configuration is required for existing deployments; `CLASSIFIER_MODEL` and `WORKER_MODEL` still control which models the classifier and worker use.
+
 **OpenWebUI:** Browse to http://localhost:3000, create a local account, select the **agentic** model from the dropdown, and type any message.
 
 > **Single-turn only:** The `/v1/chat/completions` shim extracts only the most recent user message. Prior turns are visible in the OpenWebUI chat history but are not sent to the API — each request is processed independently. This is deliberate.
@@ -173,7 +178,7 @@ CLASSIFIER_MODEL=llama3.2:3b WORKER_MODEL=llama3.1:8b docker compose up --build
 **Run tests (no Docker required):**
 ```bash
 pip install -r requirements.txt
-pytest tests/test_smoke.py -v
+python3 -m pytest tests/test_smoke.py -v
 ```
 
 ---
@@ -213,10 +218,14 @@ docker compose logs ingress | grep "request_id=<id>"
 ```
 event=pipeline_selected     request_id=<id> pipeline=default
 event=request_received      request_id=<id>
-event=classifier_start      request_id=<id> classifier=classifier_basic
+event=classifier_start      request_id=<id> classifier=classifier_basic model_provider=ollama
+event=model_provider_chat_start request_id=<id> model_provider=ollama model=llama3.2:3b
+event=model_provider_chat_complete request_id=<id> model_provider=ollama model=llama3.2:3b duration_ms=312
 event=classifier_complete   request_id=<id> intent=execution confidence=0.95 duration_ms=312
 event=router_selected       request_id=<id> intent=execution handler=worker
-event=worker_start          request_id=<id> worker=worker_llm intent=execution
+event=worker_start          request_id=<id> worker=worker_llm intent=execution model_provider=ollama
+event=model_provider_generate_start request_id=<id> model_provider=ollama model=llama3.2:3b
+event=model_provider_generate_complete request_id=<id> model_provider=ollama model=llama3.2:3b duration_ms=1450
 event=worker_complete       request_id=<id> duration_ms=1450
 event=agent_output_received request_id=<id>
 event=tool_execute          tool=read_file  request_id=<id>

@@ -1,12 +1,12 @@
 # Development Guide
 
-This guide is written for developers who want to extend or modify COREtex. It covers the v0.4.x architecture, core components, versioning conventions, and how to add new modules, tools, routes, pipelines, and API endpoints.
+This guide is written for developers who want to extend or modify COREtex. It covers the v0.5.x architecture, core components, versioning conventions, and how to add new modules, model providers, tools, routes, pipelines, and API endpoints.
 
 ---
 
 ## Architecture overview
 
-COREtex v0.4.x is a **runtime platform** composed of three distinct layers. The key architectural rule is: **the runtime never imports from modules**. All coupling goes through interfaces and registries.
+COREtex v0.5.x is a **runtime platform** composed of three distinct layers. The key architectural rule is: **the runtime never imports from modules**. All coupling goes through interfaces and registries.
 
 ```
 coretex/              ← Runtime platform (never imports from modules/)
@@ -16,9 +16,9 @@ coretex/              ← Runtime platform (never imports from modules/)
   config/           ← Settings (Pydantic BaseSettings)
 
 modules/            ← Implementations registered at startup
-  classifier_basic/        ← Intent classifier (prefix checks + LLM)
+  classifier_basic/        ← Intent classifier (prefix checks + ModelProvider.chat())
   router_simple/           ← Deterministic dict-based router
-  worker_llm/              ← LLM response generator with intent-aware prompts
+  worker_llm/              ← LLM response generator with intent-aware prompts + ModelProvider.generate()
   tools_filesystem/        ← read_file tool
   model_provider_ollama/   ← Ollama inference backend
 
@@ -46,9 +46,10 @@ PipelineRunner.run(context)  (coretex/runtime/pipeline.py)
     ├── pipeline_selected log (pipeline=default)
     ├── request_received log
     │
-    ├── classifier_start log
+    ├── classifier_start log (includes model_provider)
     ├── module_registry.get_classifier("classifier_basic")  [from PipelineDefinition]
     │     ClassifierBasic.classify(input) → ClassificationResult(intent, confidence)
+    │       └── ModelProvider.chat(model=settings.classifier_model, ...)
     ├── classifier_complete log (with duration_ms)
     │
     ├── router_selected log
@@ -57,9 +58,10 @@ PipelineRunner.run(context)  (coretex/runtime/pipeline.py)
     │
     ├── [if handler == "clarify"] → return clarification response
     │
-    ├── worker_start log
+    ├── worker_start log (includes model_provider)
     └── module_registry.get_worker("worker_llm")  [from PipelineDefinition]
           WorkerLLM.generate(input, intent) → raw JSON string
+            └── ModelProvider.generate(model=settings.worker_model, ...)
           worker_complete log (with duration_ms)
               │
               ▼
@@ -155,7 +157,7 @@ docs/
   distributions.md      — Distribution system, bootstrap pattern, Docker deployment
 
 tests/
-  test_smoke.py         — Full test suite: 129 tests (unit + integration, no Ollama required)
+  test_smoke.py         — Full test suite: 151 tests (unit + integration, no Ollama required)
 
 Dockerfile              — python:3.11-slim, runs uvicorn distributions.cortx.main:app
 docker-compose.yml      — ingress + openwebui on an isolated bridge network
@@ -174,15 +176,17 @@ Abstract base classes defining what each component type must implement:
 - **`Classifier`** — `classify(input: str, **kwargs) -> ClassificationResult`. `ClassificationResult` is a dataclass: `intent: str, confidence: float`.
 - **`Router`** — `route(intent: str) -> str`.
 - **`Worker`** — `generate(input: str, intent: str, **kwargs) -> str`.
-- **`ModelProvider`** — `complete(prompt: str, **kwargs) -> str`, `is_available() -> bool`.
+- **`ModelProvider`** — `async generate(model: str, prompt: str, **kwargs) -> str`, `async chat(model: str, messages: list, **kwargs) -> str`.
 
 ### `coretex/registry/`
 
-All four registries follow the same pattern: `register()`, `get()`, `list()`. All duplicate names raise `ValueError("Component already registered: <name>")` and all unknown lookups raise `ValueError("Unknown component: <name>")` and log `event=registry_lookup_failed`, **except** `PipelineRegistry` which uses pipeline-specific messages:
+The registries share the same `register()`, `get()`, `list()` shape, but v0.5 gives `ModelProviderRegistry` provider-specific errors:
 
 - **`ToolRegistry`** — stores `Tool` dataclasses by name.
 - **`ModuleRegistry`** — stores classifier/router/worker instances by name.
 - **`ModelProviderRegistry`** — stores `ModelProvider` instances by name.
+  - Duplicate raises `ValueError("Model provider already registered: <name>")`.
+  - Unknown raises `ValueError("Unknown model provider: <name>")` and logs `event=registry_lookup_failed`.
 - **`PipelineRegistry`** — stores `PipelineDefinition` instances by name.
   - Duplicate raises `ValueError("Pipeline already registered: <name>")`.
   - Unknown raises `ValueError("Unknown pipeline: <name>")` and logs `event=registry_lookup_failed`.
@@ -267,10 +271,14 @@ Standard log events in sequence for a tool call request:
 ```
 event=pipeline_selected       request_id=<id> pipeline=<name>
 event=request_received        request_id=<id>
-event=classifier_start        request_id=<id> classifier=<name>
+event=classifier_start        request_id=<id> classifier=<name> model_provider=<name>
+event=model_provider_chat_start request_id=<id> model_provider=<name> model=<model>
+event=model_provider_chat_complete request_id=<id> model_provider=<name> model=<model> duration_ms=<int>
 event=classifier_complete     request_id=<id> intent=<intent> confidence=<float> duration_ms=<int>
 event=router_selected         request_id=<id> intent=<intent> handler=<handler>
-event=worker_start            request_id=<id> worker=<name> intent=<intent>
+event=worker_start            request_id=<id> worker=<name> intent=<intent> model_provider=<name>
+event=model_provider_generate_start request_id=<id> model_provider=<name> model=<model>
+event=model_provider_generate_complete request_id=<id> model_provider=<name> model=<model> duration_ms=<int>
 event=worker_complete         request_id=<id> duration_ms=<int>
 event=tool_execute            request_id=<id> tool=<name>
 event=tool_execute_complete   request_id=<id> tool=<name>
@@ -328,6 +336,47 @@ pipeline = PipelineRunner(
 ```
 
 The `PipelineRunner` resolves components from the definition at startup. The pipeline name appears in `event=pipeline_selected` logs.
+
+---
+
+## How to wire a custom model provider
+
+### 1. Implement the provider
+
+```python
+from coretex.interfaces.model_provider import ModelProvider
+
+class MyProvider(ModelProvider):
+    async def generate(self, model: str, prompt: str, **kwargs) -> str:
+        ...
+
+    async def chat(self, model: str, messages: list, **kwargs) -> str:
+        ...
+```
+
+### 2. Register it in a module
+
+```python
+def register(module_registry, tool_registry, model_registry):
+    model_registry.register("my_provider", MyProvider())
+```
+
+### 3. Inject it into the classifier or worker
+
+```python
+def register(module_registry, tool_registry, model_registry):
+    provider = model_registry.get("my_provider")
+    module_registry.register_worker(
+        "my_worker",
+        MyWorker(model_provider=provider, model_provider_name="my_provider"),
+    )
+```
+
+This keeps dependency flow explicit and makes tests easy to write with stub providers.
+
+Custom providers should raise `ModelProviderError` subclasses from `coretex.interfaces.model_provider` rather than backend-library exceptions. That keeps failure handling transport-agnostic.
+
+When bootstrapping a distribution, load provider modules before classifier or worker modules that resolve providers from `model_registry` during registration.
 
 ---
 
@@ -499,6 +548,9 @@ User input is always **appended** via string `+`. Never use `str.format()` or f-
 ### Settings via `coretex/config/settings.py`
 All configurable values live in `Settings(BaseSettings)`. Never hardcode URLs, model names, timeouts, or token limits inline.
 
+### Pinned dependencies
+`requirements.txt` now uses exact version pins so repeated installs do not silently pull newer compatible releases.
+
 ### Graceful failure over 5xx
 The HTTP layer should never return 5xx. Catch `httpx.HTTPError` and tool exceptions at the distribution layer and return HTTP 200 with the appropriate failure response.
 
@@ -524,14 +576,14 @@ DEBUG_ROUTER=true LOG_LEVEL=DEBUG uvicorn distributions.cortx.main:app --reload
 ## Running tests
 
 ```bash
-# All 129 tests
-pytest tests/test_smoke.py -v
+# All 151 tests
+python3 -m pytest tests/test_smoke.py -v
 
 # Single test
-pytest tests/test_smoke.py::test_executor_tool_action_executes_tool -v
+python3 -m pytest tests/test_smoke.py::test_executor_tool_action_executes_tool -v
 
 # With coverage
-pytest tests/test_smoke.py --cov=coretex --cov=modules --cov-report=term-missing
+python3 -m pytest tests/test_smoke.py --cov=coretex --cov=modules --cov-report=term-missing
 ```
 
 All tests mock Ollama. No running services required.
@@ -549,7 +601,6 @@ All tests mock Ollama. No running services required.
 
 ## What comes next (planned phases)
 
-- **v0.5 — Model Provider System** — `ModelProvider` abstraction, `model_provider_ollama` module, hybrid model strategies.
 - **v0.6 — Distribution Layer** — first CortX distributions (e.g., `cortx_local`), bootstrapped module loading.
 - **v0.7 — Event System** — runtime-wide event bus, structured events for debugging, observability, and metrics.
 - **v0.8 — Tool System Modularisation** — refactor tools into modules (`tools_filesystem`, `tools_shell`, `tools_http`, `tools_git`).
